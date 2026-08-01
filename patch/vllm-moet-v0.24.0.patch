@@ -177,10 +177,10 @@ index 000000000..c4b64f25b
 +}
 diff --git a/tests/model_executor/layers/test_moe_w2_persistence.py b/tests/model_executor/layers/test_moe_w2_persistence.py
 new file mode 100644
-index 000000000..dcbeff36c
+index 000000000..b6a67ec37
 --- /dev/null
 +++ b/tests/model_executor/layers/test_moe_w2_persistence.py
-@@ -0,0 +1,485 @@
+@@ -0,0 +1,652 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +
@@ -198,6 +198,7 @@ index 000000000..dcbeff36c
 +from vllm.model_executor.layers.quantization.utils import (
 +    moe_w2_cubit,
 +    moe_w2_delta,
++    moe_w2_gate,
 +    moe_w2_planes,
 +    moe_w2_planes_cache,
 +    moe_w2_store,
@@ -420,19 +421,18 @@ index 000000000..dcbeff36c
 +
 +
 +@pytest.mark.parametrize(
-+    "dtype,use_v2,use_ubatching,expert_parallel,match",
++    "dtype,use_ubatching,expert_parallel,match",
 +    [
-+        (torch.float16, False, False, False, "require model dtype"),
-+        (torch.bfloat16, True, False, False, "Model Runner V2"),
-+        (torch.bfloat16, False, True, False, "ubatching"),
-+        (torch.bfloat16, False, False, True, "expert parallelism"),
++        (torch.float16, False, False, "require model dtype"),
++        (torch.bfloat16, True, False, "ubatching"),
++        (torch.bfloat16, False, True, "expert parallelism"),
 +    ],
 +)
 +def test_w2_config_contract_rejects_unsafe_runtime_combinations(
-+        dtype, use_v2, use_ubatching, expert_parallel, match):
++        dtype, use_ubatching, expert_parallel, match):
 +    config = SimpleNamespace(
 +        model_config=SimpleNamespace(dtype=dtype),
-+        use_v2_model_runner=use_v2,
++        use_v2_model_runner=False,
 +        parallel_config=SimpleNamespace(
 +            use_ubatching=use_ubatching,
 +            ubatch_size=1 if use_ubatching else 0,
@@ -444,6 +444,173 @@ index 000000000..dcbeff36c
 +            "vllm.config.get_current_vllm_config", return_value=config):
 +        with pytest.raises(ValueError, match=match):
 +            moe_w2_cubit._layer_contract(_contract_layer())
++
++
++def _v2_contract_config(speculative_config=None):
++    return SimpleNamespace(
++        model_config=SimpleNamespace(dtype=torch.bfloat16),
++        use_v2_model_runner=True,
++        speculative_config=speculative_config,
++        parallel_config=SimpleNamespace(
++            use_ubatching=False,
++            ubatch_size=0,
++            enable_expert_parallel=False,
++            enable_eplb=False,
++        ),
++    )
++
++
++def test_w2_v2_allows_full_resident_gate_disabled(monkeypatch):
++    monkeypatch.setattr(moe_w2_delta, "base_enabled", lambda: False)
++    monkeypatch.setattr(moe_w2_gate, "enabled", lambda: False)
++    with mock.patch(
++        "vllm.config.get_current_vllm_config",
++        return_value=_v2_contract_config(),
++    ):
++        contract = moe_w2_cubit._layer_contract(_contract_layer())
++    assert contract["activation"] == "silu"
++
++
++def _dspark_config(n_mtp_layers=3):
++    return SimpleNamespace(
++        method="dspark",
++        draft_model_config=SimpleNamespace(
++            hf_config=SimpleNamespace(n_mtp_layers=n_mtp_layers)
++        ),
++    )
++
++
++def test_w2_mtp_layer_selection_is_explicit(monkeypatch):
++    monkeypatch.setenv("VLLM_MOE_W2", "1")
++    monkeypatch.setattr(moe_w2_cubit, "_cutoff_cache", 43)
++    monkeypatch.delenv("VLLM_MOE_W2_MTP_LAYERS", raising=False)
++    assert moe_w2_cubit.is_w2_layer("model.layers.42.ffn.experts")
++    assert not moe_w2_cubit.is_w2_layer("model.layers.43.ffn.experts")
++
++    monkeypatch.setenv("VLLM_MOE_W2_MTP_LAYERS", "3")
++    assert moe_w2_cubit.is_w2_layer("model.layers.43.ffn.experts")
++    assert moe_w2_cubit.is_w2_layer("model.layers.45.ffn.experts")
++    assert not moe_w2_cubit.is_w2_layer("model.layers.46.ffn.experts")
++
++
++def test_w2_mtp_layer_count_rejects_negative_values(monkeypatch):
++    monkeypatch.setenv("VLLM_MOE_W2_MTP_LAYERS", "-1")
++    with pytest.raises(ValueError, match="must be non-negative"):
++        moe_w2_cubit._mtp_layer_count()
++
++
++def test_w2_mtp_layers_do_not_extend_the_target_delta_tier(monkeypatch):
++    monkeypatch.setattr(moe_w2_cubit, "_cutoff_cache", 43)
++    layer = SimpleNamespace(layer_name="model.layers.43.ffn.experts")
++    with mock.patch.object(
++        moe_w2_delta,
++        "get_tier",
++        side_effect=AssertionError("MTP must not create or index target tier"),
++    ):
++        assert moe_w2_cubit._fp4_tier_for_build(
++            256, torch.device("cpu"), 1024, 512, layer
++        ) is None
++
++
++@pytest.mark.parametrize(
++    "use_v2,spec_config,mtp_layers,match",
++    [
++        (False, _dspark_config(), 3, "requires Model Runner V2"),
++        (True, None, 3, "only with DSpark"),
++        (
++            True,
++            SimpleNamespace(method="eagle"),
++            3,
++            "only with DSpark",
++        ),
++        (
++            True,
++            SimpleNamespace(
++                method="dspark",
++                draft_model_config=SimpleNamespace(hf_config=SimpleNamespace()),
++            ),
++            3,
++            "requires DSpark draft-layer metadata",
++        ),
++        (True, _dspark_config(), 2, "must match DSpark's draft layer count"),
++    ],
++)
++def test_w2_mtp_rejects_unsupported_runtime_configs(
++    monkeypatch, use_v2, spec_config, mtp_layers, match
++):
++    monkeypatch.setenv("VLLM_MOE_W2_MTP_LAYERS", str(mtp_layers))
++    monkeypatch.setattr(moe_w2_delta, "base_enabled", lambda: False)
++    monkeypatch.setattr(moe_w2_gate, "enabled", lambda: False)
++    config = _v2_contract_config(spec_config)
++    config.use_v2_model_runner = use_v2
++    with mock.patch(
++        "vllm.config.get_current_vllm_config", return_value=config
++    ):
++        with pytest.raises(ValueError, match=match):
++            moe_w2_cubit._layer_contract(_contract_layer())
++
++
++def test_w2_mtp_accepts_complete_dspark_draft(monkeypatch):
++    monkeypatch.setenv("VLLM_MOE_W2_MTP_LAYERS", "3")
++    monkeypatch.setattr(moe_w2_delta, "base_enabled", lambda: False)
++    monkeypatch.setattr(moe_w2_gate, "enabled", lambda: False)
++    with mock.patch(
++        "vllm.config.get_current_vllm_config",
++        return_value=_v2_contract_config(_dspark_config()),
++    ):
++        contract = moe_w2_cubit._layer_contract(_contract_layer())
++    assert contract["activation"] == "silu"
++
++
++@pytest.mark.parametrize(
++    "base_enabled,gate_enabled,match",
++    [
++        (True, False, "base cache/replay"),
++        (False, True, "confidence-gate"),
++    ],
++)
++def test_w2_v2_rejects_replay_dependent_modes(
++    monkeypatch, base_enabled, gate_enabled, match
++):
++    monkeypatch.setattr(moe_w2_delta, "base_enabled", lambda: base_enabled)
++    monkeypatch.setattr(moe_w2_gate, "enabled", lambda: gate_enabled)
++    with mock.patch(
++        "vllm.config.get_current_vllm_config",
++        return_value=_v2_contract_config(),
++    ):
++        with pytest.raises(ValueError, match=match):
++            moe_w2_cubit._layer_contract(_contract_layer())
++
++
++def test_w2_v2_lifecycle_is_rank_local_and_ordered(monkeypatch):
++    calls = []
++
++    class Tier:
++        def __init__(self, name):
++            self.name = name
++
++        def wait_manager_idle(self):
++            calls.append((self.name, "wait"))
++
++        def step_end(self):
++            calls.append((self.name, "end"))
++
++        def wake(self):
++            calls.append((self.name, "wake"))
++
++    monkeypatch.setattr(moe_w2_delta, "_BASE_TIER", Tier("base"))
++    monkeypatch.setattr(moe_w2_delta, "_TIER", Tier("delta"))
++    moe_w2_delta.v2_runner_before_forward()
++    moe_w2_delta.v2_runner_step_end()
++    moe_w2_delta.wake_all()
++    assert calls == [
++        ("base", "wait"),
++        ("delta", "wait"),
++        ("base", "end"),
++        ("delta", "end"),
++        ("base", "wake"),
++        ("delta", "wake"),
++    ]
 +
 +
 +def test_strict_replay_converges_or_fails_closed():
@@ -2723,10 +2890,10 @@ index 000000000..d26ce2cf4
 +        "on" if _verify() else "off")
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
 new file mode 100644
-index 000000000..2c053ed42
+index 000000000..3b31a7e45
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
-@@ -0,0 +1,2699 @@
+@@ -0,0 +1,2768 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""Routed experts on 2-bit tensor-sym planes (cubit moe_w2) for the
@@ -3017,21 +3184,35 @@ index 000000000..2c053ed42
 +    return 43
 +
 +
++def _mtp_layer_count() -> int:
++    """Number of trailing MTP layers explicitly served by W2."""
++    value = int(os.getenv("VLLM_MOE_W2_MTP_LAYERS", "0"))
++    if value < 0:
++        raise ValueError("VLLM_MOE_W2_MTP_LAYERS must be non-negative")
++    return value
++
++
++def _layer_index(layer_name: str) -> int | None:
++    import re
++
++    match = re.search(r"\.layers\.(\d+)\.", layer_name or "")
++    return None if match is None else int(match.group(1))
++
++
++def _is_mtp_layer(layer_name: str) -> bool:
++    index = _layer_index(layer_name)
++    return index is not None and index >= _layer_cutoff()
++
++
 +def is_w2_layer(layer_name: str) -> bool:
-+    """Main-model routed experts only. The MTP drafter (layer index >=
-+    num_hidden_layers, e.g. model.layers.43.* for the 43-layer main stack)
-+    keeps its original path: QUANT_PROBE's acceptance numbers were
-+    measured with the drafter unmodified."""
++    """Select main-model experts and explicitly enabled MTP layers."""
 +    if not enabled():
 +        return False
 +    name = layer_name or ""
-+    if "mtp" in name:
++    index = _layer_index(name)
++    if index is None:
 +        return False
-+    import re
-+    m = re.search(r"\.layers\.(\d+)\.", name)
-+    if m is None:
-+        return False
-+    return int(m.group(1)) < _layer_cutoff()
++    return index < _layer_cutoff() + _mtp_layer_count()
 +
 +
 +def _driver():
@@ -3165,7 +3346,13 @@ index 000000000..2c053ed42
 +            f"{missing} (dir {_DIR}; set VLLM_MOE_W2_CUBIT_DIR)")
 +
 +
-+def _fp4_tier_for_build(E: int, dev, n13k13: int, n2k2: int):
++def _fp4_tier_for_build(
++    E: int,
++    dev,
++    n13k13: int,
++    n2k2: int,
++    layer=None,
++):
 +    """FP4 delta tier sized for this model's PER-RANK shapes (n13k13 =
 +    N13*K13, n2k2 = N2*K2 elements). Over the base cache the FP4 slots must
 +    carry their OWN block-32 scale sections ([fp4_13|sc13|fp4_2|sc2]) — the
@@ -3175,6 +3362,10 @@ index 000000000..2c053ed42
 +    moe_w2_planes.pack_quintal_fragment_major) and NO scale sections even
 +    over the base cache — the quintal kernel reads class/sign/scales from
 +    the base slot the refinement is residency-coupled to."""
++    if layer is not None and _is_mtp_layer(
++        getattr(layer, "layer_name", "")
++    ):
++        return None
 +    from vllm.model_executor.layers.quantization.utils import moe_w2_delta
 +    split = moe_w2_delta.split_enabled()
 +    sc13, sc2 = ((n13k13 // 32, n2k2 // 32)
@@ -3242,9 +3433,40 @@ index 000000000..2c053ed42
 +                "VLLM_MOE_W2 kernels use BF16 intermediates and currently "
 +                f"require model dtype bfloat16, got {cfg.model_config.dtype}")
 +        if cfg.use_v2_model_runner:
-+            raise ValueError(
-+                "VLLM_MOE_W2 is not integrated with Model Runner V2 "
-+                "(mandatory base replay and gate hooks are absent)")
++            from vllm.model_executor.layers.quantization.utils import (
++                moe_w2_delta, moe_w2_gate)
++
++            unsupported = []
++            if moe_w2_delta.base_enabled():
++                unsupported.append("host-resident base cache/replay")
++            if moe_w2_gate.enabled():
++                unsupported.append("confidence-gate re-forward")
++            if unsupported:
++                raise ValueError(
++                    "VLLM_MOE_W2 with Model Runner V2 currently supports "
++                    "only a full-resident base with the confidence gate "
++                    "disabled; unsupported: " + ", ".join(unsupported))
++        mtp_layers = _mtp_layer_count()
++        if mtp_layers:
++            spec_config = getattr(cfg, "speculative_config", None)
++            if not cfg.use_v2_model_runner:
++                raise ValueError(
++                    "VLLM_MOE_W2_MTP_LAYERS requires Model Runner V2")
++            if getattr(spec_config, "method", None) != "dspark":
++                raise ValueError(
++                    "VLLM_MOE_W2_MTP_LAYERS is supported only with DSpark")
++            draft_config = getattr(spec_config, "draft_model_config", None)
++            draft_hf_config = getattr(draft_config, "hf_config", None)
++            available = getattr(draft_hf_config, "n_mtp_layers", None)
++            if not available:
++                raise ValueError(
++                    "VLLM_MOE_W2_MTP_LAYERS requires DSpark draft-layer "
++                    "metadata (n_mtp_layers) to validate the complete draft"
++                )
++            if mtp_layers != available:
++                raise ValueError(
++                    "VLLM_MOE_W2_MTP_LAYERS must match DSpark's draft "
++                    f"layer count ({available}), got {mtp_layers}")
 +        pc = cfg.parallel_config
 +        if (getattr(pc, "use_ubatching", False)
 +                or getattr(pc, "ubatch_size", 0)):
@@ -3363,8 +3585,17 @@ index 000000000..2c053ed42
 +        # layer index, sized exactly like process-time try_load).
 +        lidx = _pc.layer_idx_from_name(getattr(layer, "layer_name", ""))
 +        if lidx is None or not _pc.cache_has_layer(
-+                lidx, _pc.expected_sizes(
-+                    E, N13, K13, N2, K2, want_fp4=moe_w2_delta.enabled())):
++            lidx, _pc.expected_sizes(
++                E,
++                N13,
++                K13,
++                N2,
++                K2,
++                want_fp4=(
++                    moe_w2_delta.enabled()
++                    and not _is_mtp_layer(getattr(layer, "layer_name", ""))
++                ),
++            )):
 +            return False
 +    for pname in ("w13_weight", "w13_weight_scale",
 +                  "w2_weight", "w2_weight_scale"):
@@ -3541,7 +3772,7 @@ index 000000000..2c053ed42
 +        w13_bytes=c13len + s13len, w2_bytes=c2len + s2len)
 +    if layer_key not in btier._store:
 +        return False
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2, layer)
 +    if tier is not None and layer_key not in tier._store:
 +        return False
 +    from vllm.model_executor.layers.quantization.utils import (
@@ -3622,7 +3853,7 @@ index 000000000..2c053ed42
 +    # Pass the PER-RANK FP4 plane sizes (N*K//2 bytes/expert) so the delta tier's
 +    # slots, host store, and pool indexing match the (TP-sharded) planes. On TP1
 +    # these equal the module constants -> the single-GPU path is unchanged.
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2, layer)
 +    fp13 = fp2 = None
 +    if tier is not None:
 +        # full nibble planes (w4) or quintal planes (w4q, split)
@@ -3713,7 +3944,7 @@ index 000000000..2c053ed42
 +    planes2 = torch.empty(E, N2 * K2 // 4, dtype=torch.uint8, device=dev)
 +    sc2 = torch.empty(E, N2 * K2 // 32, dtype=torch.uint8, device=dev)
 +
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2, layer)
 +    fp13 = fp2 = None
 +    if tier is not None:
 +        # full nibble planes (w4) or quintal planes (w4q, split)
@@ -3772,7 +4003,7 @@ index 000000000..2c053ed42
 +    lidx = planes_cache.layer_idx_from_name(getattr(layer, "layer_name", ""))
 +    if not planes_cache.enabled() or lidx is None:
 +        return False
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2, layer)
 +    cached = planes_cache.try_load(lidx, planes_cache.expected_sizes(
 +        E, N13, K13, N2, K2, want_fp4=tier is not None))
 +    if cached is None:
@@ -3872,7 +4103,7 @@ index 000000000..2c053ed42
 +    from vllm.model_executor.layers.quantization.utils import (
 +        moe_w2_planes_cache as planes_cache)
 +    lidx = planes_cache.layer_idx_from_name(getattr(layer, "layer_name", ""))
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2, layer)
 +
 +    planes13 = torch.empty(E, N13 * K13 // 4, dtype=torch.uint8, device=dev)
 +    sc13 = torch.empty(E, N13 * K13 // 32, dtype=torch.uint8, device=dev)
@@ -3942,6 +4173,7 @@ index 000000000..2c053ed42
 +    from vllm.model_executor.layers.quantization.utils import (
 +        moe_w2_planes_cache as _pc)
 +    _tl = _pc.layer_idx_from_name(getattr(layer, "layer_name", ""))
++    delta_eligible = not _is_mtp_layer(getattr(layer, "layer_name", ""))
 +    if moe_w2_delta.base_enabled():
 +        # BASE cache (inverted delta): the 2-bit planes go to PINNED HOST RAM
 +        # instead of staying GPU-resident; the GPU holds only the base tier's
@@ -3959,6 +4191,7 @@ index 000000000..2c053ed42
 +            layer_key, (planes13, sc13), (planes2, sc2))
 +        _LAYERS[layer_key] = dict(
 +            N13=N13, K13=K13, N2=N2, K2=K2, E=E, base=True, tl_idx=_tl,
++            delta_eligible=delta_eligible,
 +            off_s13=c13len, off_c2=c13len + s13len,
 +            off_s2=c13len + s13len + c2len,
 +            # FP4 need-pool slot sections ([fp4_13|sc13|fp4_2|sc2]; fp4 codes
@@ -3984,6 +4217,7 @@ index 000000000..2c053ed42
 +    _LAYERS[layer_key] = dict(
 +        planes13=planes13, sc13=sc13, planes2=planes2, sc2=sc2,
 +        N13=N13, K13=K13, N2=N2, K2=K2, E=E, tl_idx=_tl,
++        delta_eligible=delta_eligible,
 +        **contract,
 +    )
 +    # Release checkpoint copies; keep CUDA stubs so device probes stay happy.
@@ -4024,7 +4258,7 @@ index 000000000..2c053ed42
 +        hf = vcfg.model_config.hf_text_config
 +        n_layers = int(getattr(hf, "num_hidden_layers", 0) or 0)
 +        n_dense = int(getattr(hf, "first_k_dense_replace", 0) or 0)
-+        n_moe = max(n_layers - n_dense, 1)
++        n_moe = max(n_layers - n_dense, 1) + _mtp_layer_count()
 +        max_len = int(vcfg.model_config.max_model_len)
 +        spec_on = vcfg.speculative_config is not None
 +        free_b, _total_b = torch.cuda.mem_get_info(dev)
@@ -5165,7 +5399,9 @@ index 000000000..2c053ed42
 +        if not use_fp4 and not use_pf4:
 +            tier = None      # downstream w4 launches key off `tier`
 +    else:
-+        tier = moe_w2_delta._TIER       # peek only; created by the plane builder
++        tier = (
++            moe_w2_delta._TIER if st.get("delta_eligible", True) else None
++        )
 +        # prefill consumes the FP4 tier too (quality lever, see _PREFILL_FP4)
 +        use_pf4 = (_PREFILL_FP4 and prefill and tier is not None
 +                   and tier.n_slots > 0)
@@ -5428,10 +5664,10 @@ index 000000000..2c053ed42
 +    ready.cache_clear()
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py b/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py
 new file mode 100644
-index 000000000..4574d5c27
+index 000000000..e33f0216b
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py
-@@ -0,0 +1,2233 @@
+@@ -0,0 +1,2274 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""FP4 delta tier for the 1-GPU 2-bit MoE path (quality restoration).
@@ -7514,6 +7750,23 @@ index 000000000..4574d5c27
 +        pass
 +
 +
++def check_pool_floor_for_config(vllm_config) -> None:
++    """Run the post-load residency/config guard for either GPU runner."""
++    if _BASE_TIER is None and _TIER is None:
++        return
++    top_k = int(getattr(
++        vllm_config.model_config.hf_text_config,
++        "num_experts_per_tok",
++        0,
++    ) or 0)
++    if top_k > 0:
++        check_pool_floor(
++            top_k,
++            vllm_config.num_speculative_tokens,
++            vllm_config.scheduler_config.max_num_seqs,
++        )
++
++
 +def gate_armed() -> bool:
 +    from vllm.model_executor.layers.quantization.utils import moe_w2_gate
 +    return moe_w2_gate.enabled()
@@ -7539,6 +7792,30 @@ index 000000000..4574d5c27
 +    t = _TIER
 +    if t is not None:
 +        t.wake()
++
++
++def v2_runner_before_forward() -> None:
++    """Enter a Model Runner V2 target forward at a residency safe point.
++
++    Each worker/rank owns its tiers and invokes this independently. Waiting
++    before every target forward prevents the manager side stream from
++    changing slot ownership while a captured graph reads the slot table.
++    """
++    for tier in (_BASE_TIER, _TIER):
++        if tier is not None:
++            tier.wait_manager_idle()
++
++
++def v2_runner_step_end() -> None:
++    """Publish a completed Model Runner V2 target/speculative step.
++
++    Runner V2 separates target execution from sampling and draft proposal,
++    so callers close the step only after proposal is complete. ``step_end``
++    records the current-stream event consumed by each rank-local manager.
++    """
++    for tier in (_BASE_TIER, _TIER):
++        if tier is not None:
++            tier.step_end()
 +
 +
 +def get_base_tier(n_layers: int, n_experts: int, dev,
@@ -14283,10 +14560,18 @@ index 6b750fe7e..167ad6851 100644
          # last sampled token in addition to all draft tokens.
          BLOCK_SIZE=triton.next_power_of_2(
 diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
-index 30ca2ddc5..4571ff600 100644
+index 30ca2ddc5..833b2986b 100644
 --- a/vllm/v1/worker/gpu/model_runner.py
 +++ b/vllm/v1/worker/gpu/model_runner.py
-@@ -47,6 +47,7 @@ from vllm.tasks import SupportedTask
+@@ -40,6 +40,7 @@ from vllm.logger import init_logger
+ from vllm.model_executor.layers.mamba.ops.ssu_dispatch import (
+     initialize_mamba_ssu_backend,
+ )
++from vllm.model_executor.layers.quantization.utils import moe_w2_delta
+ from vllm.model_executor.model_loader import get_model_loader
+ from vllm.multimodal import MULTIMODAL_REGISTRY
+ from vllm.sequence import IntermediateTensors
+@@ -47,6 +48,7 @@ from vllm.tasks import SupportedTask
  from vllm.utils.math_utils import cdiv
  from vllm.utils.mem_utils import DeviceMemoryProfiler, format_gib
  from vllm.utils.torch_utils import PIN_MEMORY, STR_DTYPE_TO_TORCH_DTYPE
@@ -14294,7 +14579,7 @@ index 30ca2ddc5..4571ff600 100644
  from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
  from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
  from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
-@@ -102,6 +103,7 @@ from vllm.v1.worker.gpu.sample.prompt_logprob import PromptLogprobsWorker
+@@ -102,6 +104,7 @@ from vllm.v1.worker.gpu.sample.prompt_logprob import PromptLogprobsWorker
  from vllm.v1.worker.gpu.sample.sampler import Sampler
  from vllm.v1.worker.gpu.shutdown import free_before_shutdown
  from vllm.v1.worker.gpu.spec_decode import init_speculator
@@ -14302,7 +14587,7 @@ index 30ca2ddc5..4571ff600 100644
  from vllm.v1.worker.gpu.spec_decode.eagle.eagle3_utils import (
      set_eagle3_aux_hidden_state_layers,
  )
-@@ -186,13 +188,22 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -186,13 +189,22 @@ class GPUModelRunner(LoRAModelRunnerMixin):
  
          # Speculative decoding.
          self.speculator = None
@@ -14326,7 +14611,18 @@ index 30ca2ddc5..4571ff600 100644
                  # Drafting may require auxiliary hidden states from target model outputs
                  self.use_aux_hidden_state_outputs = True
                  if self.use_pp:
-@@ -469,6 +480,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -305,6 +317,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             time_after_load - time_before_load,
+         )
+ 
++        # V1 performs the same W2 residency/config guard at this point.
++        if not load_dummy_weights:
++            moe_w2_delta.check_pool_floor_for_config(self.vllm_config)
++
+         if not load_dummy_weights:
+             prepare_communication_buffer_for_model(self.model)
+             if self.speculator is not None:
+@@ -469,6 +485,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              cudagraph_mode,
              decode_query_len=self.decode_query_len,
              lora_capture_cases=self.lora_capture_cases,
@@ -14338,7 +14634,15 @@ index 30ca2ddc5..4571ff600 100644
          )
          if self.speculator is not None:
              self.speculator.init_cudagraph_manager(cudagraph_mode)
-@@ -602,7 +618,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -571,6 +592,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+ 
+         # Non-last PP ranks don't produce output for sampling.
+         if not self.is_last_pp_rank:
++            moe_w2_delta.v2_runner_step_end()
+             return None, None
+ 
+         assert self.execute_model_state is not None
+@@ -602,7 +624,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              spec_hidden_states = hidden_states
              if hasattr(self.model, "get_mtp_target_hidden_states"):
                  pre_hc_hidden_states = self.model.get_mtp_target_hidden_states()
@@ -14349,7 +14653,15 @@ index 30ca2ddc5..4571ff600 100644
              self.speculator.propose(
                  input_batch=input_batch,
                  attn_metadata=attn_metadata,
-@@ -685,6 +703,77 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -627,6 +651,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+ 
+         assert hidden_states is not None  # Last PP rank always has hidden_states
+         sample_hidden_states = hidden_states[input_batch.logits_indices]
++        moe_w2_delta.v2_runner_step_end()
+         return hidden_states, sample_hidden_states
+ 
+     @torch.inference_mode()
+@@ -685,6 +710,77 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          # NOTE(woosuk): It is TBD whether we keep this API or not.
          return 0
  
@@ -14427,15 +14739,24 @@ index 30ca2ddc5..4571ff600 100644
      @torch.inference_mode()
      def capture_model(self) -> int:
          assert self.cudagraph_manager is not None
-@@ -717,6 +806,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -703,6 +799,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         start_free_gpu_memory = torch.cuda.mem_get_info()[0]
+ 
+         with self.maybe_setup_dummy_loras(self.lora_config):
++            moe_w2_delta.v2_runner_before_forward()
+             attn_states = self.cudagraph_manager.capture(
+                 self.model,
+                 self.model_state,
+@@ -717,6 +814,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              )
              if self.speculator is not None:
                  self.speculator.capture(attn_states)
 +                self._profile_dspark_cost_table()
++            moe_w2_delta.v2_runner_step_end()
  
          end_time = time.perf_counter()
          end_free_gpu_memory = torch.cuda.mem_get_info()[0]
-@@ -895,6 +985,20 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -895,6 +994,20 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  idx_mapping, total_num_logits, cu_num_logits, max_expand_len
              )
  
@@ -14456,7 +14777,7 @@ index 30ca2ddc5..4571ff600 100644
          # Get query_start_loc.
          # num_reqs_padded is None for PIECEWISE graphs (no request padding needed)
          num_reqs_padded = batch_desc.num_reqs or num_reqs
-@@ -960,7 +1064,17 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -960,7 +1073,17 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              cu_num_logits,
              total_num_logits,
              self.model_state.num_new_sampled_tokens_per_step,
@@ -14474,7 +14795,7 @@ index 30ca2ddc5..4571ff600 100644
  
          # CPU upper bound on seq_lens; padded entries left at zero.
          num_computed_tokens_np = self.req_states.num_computed_tokens_np[idx_mapping_np]
-@@ -991,6 +1105,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -991,6 +1114,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              num_draft_tokens_per_req=num_draft_tokens_per_req,
              query_start_loc=query_start_loc,
              query_start_loc_np=query_start_loc_np,
@@ -14482,7 +14803,7 @@ index 30ca2ddc5..4571ff600 100644
              seq_lens=seq_lens,
              seq_lens_cpu_upper_bound=seq_lens_cpu_upper_bound,
              dcp_local_seq_lens=dcp_local_seq_lens,
-@@ -1064,6 +1179,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1064,6 +1188,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  input_batch,
                  # Draft logits are needed for probabilistic rejection sampling.
                  self.speculator.draft_logits,
@@ -14492,7 +14813,7 @@ index 30ca2ddc5..4571ff600 100644
              )
  
          return sampler_output, sampler_output.num_sampled, sampler_output.num_rejected
-@@ -1107,6 +1225,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1107,6 +1234,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          is_profile: bool = False,
      ) -> ModelRunnerOutput | IntermediateTensors | None:
          if not dummy_run:
@@ -14512,7 +14833,7 @@ index 30ca2ddc5..4571ff600 100644
              # Update the request states.
              self.update_pp_decode_requests()
              self.finish_requests(scheduler_output)
-@@ -1125,6 +1256,30 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1125,6 +1265,30 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          max_query_len = max(scheduler_output.num_scheduled_tokens.values())
          uniform_tok_count = get_uniform_token_count(num_reqs, num_toks, max_query_len)
  
@@ -14543,7 +14864,7 @@ index 30ca2ddc5..4571ff600 100644
          num_active_loras = 0
          if self.lora_config:
              req_ids = list(scheduler_output.num_scheduled_tokens.keys())
-@@ -1160,6 +1315,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1160,6 +1324,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              # Prepare all the inputs and copy to the input buffers.
              input_batch = self.prepare_inputs(scheduler_output, batch_desc)
              block_tables, slot_mappings = self.prepare_attn(input_batch)
@@ -14567,7 +14888,19 @@ index 30ca2ddc5..4571ff600 100644
  
              if self.lora_config:
                  # Activate LoRA adapters.
-@@ -1424,7 +1596,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1252,6 +1433,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             model_inputs["intermediate_tensors"] = IntermediateTensors(new_tensors)
+             del intermediate_tensors
+ 
++        # W2 delta managers mutate rank-local slot tables and pool storage on
++        # side streams only between steps. Runner V2 keeps this step open
++        # through sample_tokens(), including DSpark proposal.
++        moe_w2_delta.v2_runner_before_forward()
++
+         # Run model.
+         if batch_desc.cg_mode == CUDAGraphMode.FULL:
+             # Use explicit cudagraph replay for FULL mode.
+@@ -1424,7 +1610,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              sampler_output.sampled_token_ids,
              num_sampled,
              num_rejected,
@@ -14580,7 +14913,7 @@ index 30ca2ddc5..4571ff600 100644
          )
  
          if self.speculator is not None:
-@@ -1436,7 +1612,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1436,7 +1626,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              spec_hidden_states = hidden_states
              if hasattr(self.model, "get_mtp_target_hidden_states"):
                  pre_hc_hidden_states = self.model.get_mtp_target_hidden_states()
@@ -14591,7 +14924,7 @@ index 30ca2ddc5..4571ff600 100644
              draft_tokens = self.speculator.propose(
                  input_batch,
                  attn_metadata,
-@@ -1451,14 +1629,25 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1451,16 +1643,31 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  self.sampler.sampling_states.seeds.gpu,
                  mm_inputs=mm_inputs,
              )
@@ -14618,7 +14951,13 @@ index 30ca2ddc5..4571ff600 100644
 +                lengths=getattr(self.speculator, "_perreq_batch_len", None),
              )
  
++        # Target verification and draft proposal are both complete. Publish
++        # one event-backed residency snapshot before the next target forward.
++        moe_w2_delta.v2_runner_step_end()
++
          # Post-step KV connector related operations.
+         kv_connector_output = self.kv_connector.post_forward(finished_req_ids)
+         model_runner_output.kv_connector_output = kv_connector_output
 diff --git a/vllm/v1/worker/gpu/sample/gumbel.py b/vllm/v1/worker/gpu/sample/gumbel.py
 index fab53fef7..7bacdbc51 100644
 --- a/vllm/v1/worker/gpu/sample/gumbel.py

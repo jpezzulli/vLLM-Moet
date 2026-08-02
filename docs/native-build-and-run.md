@@ -165,6 +165,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export VLLM_MOE_W2_CUBIT_DIR=/opt/vllm-moet-clean/kernels/cubins-sm120
 export VLLM_USE_V2_MODEL_RUNNER=1
 export VLLM_USE_BREAKABLE_CUDAGRAPH=0
+export VLLM_USE_DEEP_GEMM=1
 export VLLM_MOE_W2=1
 export VLLM_MOE_W2_FORCE_RESIDENT=1
 export VLLM_MOE_W2_DELTA_GB=6
@@ -190,7 +191,8 @@ export VLLM_MOE_W2_MAPPED_AUDIT_PATH=/tmp/pennyroyal-mapped-w2-audit.json
   --trust-remote-code --load-format safetensors \
   --tokenizer-mode deepseek_v4 --reasoning-parser deepseek_v4 \
   --default-chat-template-kwargs \
-    '{"enable_thinking":true,"reasoning_effort":"high"}' \
+    '{"enable_thinking":true,"reasoning_effort":"max"}' \
+  --override-generation-config '{"top_p":0.95}' \
   --enable-auto-tool-choice --tool-call-parser deepseek_v4 \
   --speculative-config \
     '{"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"greedy"}' \

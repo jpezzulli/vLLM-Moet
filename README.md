@@ -37,8 +37,11 @@ The sealed run completed startup, arithmetic inference, and one exact
 1,024-token decode at 55.02 tok/s after the first token, with 1,057 MiB
 physical VRAM free after capture. The runtime reported 625,757 tokens of KV
 capacity. Neither the configured 393,216-token limit nor that capacity is an
-exercised-context result, and the frozen quality suites, soak testing, and
-container validation have not been run for this candidate.
+exercised-context result. The frozen quality suites passed: the preserved
+`reasoning_effort=high` baseline scored 92.66/100 reasoning and 30/30 tools;
+the production `reasoning_effort=max`, `top_p=0.95` shape scored 96.86/100
+reasoning and 30/30 tools. Soak testing and container validation have not been
+run for this candidate.
 
 A clean checkout using native extensions built from the pinned source
 reproduced normal graph startup, the same 625,757-token KV capacity and
@@ -50,7 +53,8 @@ is claimed.
 Use the fixed recipe
 `deepseek-v4-flash/pro6000x1-mapped-w2-dspark3`, or follow the
 [native build and run guide](docs/native-build-and-run.md). Architecture,
-configuration, evidence boundaries, and troubleshooting are documented in
+configuration, [quality validation](docs/mapped-w2-quality-validation.md),
+evidence boundaries, and troubleshooting are documented in
 [docs/architecture.md](docs/architecture.md),
 [docs/configuration.md](docs/configuration.md),
 [docs/validation.md](docs/validation.md), and

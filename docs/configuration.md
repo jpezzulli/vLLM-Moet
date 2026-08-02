@@ -21,6 +21,7 @@ there is no partial-tensor selector.
 |---|---:|---|
 | `VLLM_USE_V2_MODEL_RUNNER` | `1` | Required for the mapped path and DSpark lifecycle. |
 | `VLLM_USE_BREAKABLE_CUDAGRAPH` | `0` | Preserves the validated normal graph path. |
+| `VLLM_USE_DEEP_GEMM` | `1` | Explicit production setting. Startup selected the same DeepGEMM FP8 and MXFP4 kernels in both frozen quality runs; this is not a newly measured speed optimization. |
 | `VLLM_MOE_W2` | `1` | Enables MoET W2. |
 | `VLLM_MOE_W2_FORCE_RESIDENT` | `1` | User consent to continue past the existing conservative resident estimate; a real shortfall can still OOM. |
 | `VLLM_MOE_W2_DELTA_GB` | `6` | Exactly 512 FP4 correction slots at 12 MiB/slot for this model. This tier is outside vLLM's utilization budget. |
@@ -37,6 +38,8 @@ there is no partial-tensor selector.
 | `--block-size` | `256` | Validated KV block shape. |
 | `--max-num-batched-tokens` | `2048` | Validated profile/prefill chunk shape. |
 | `--max-num-seqs` | `4` | Configured scheduler concurrency; the bounded decode result was single-request. |
+| `--default-chat-template-kwargs` | thinking enabled, `reasoning_effort=max` | Production quality setting. The separately preserved frozen baseline used `high`. |
+| `--override-generation-config` | `{"top_p":0.95}` | Production quality setting. The separately preserved frozen baseline used the checkpoint default `top_p=1.0`. |
 | `--speculative-config` | DSpark, 3 tokens, greedy draft | Validated speculative depth and draft method. |
 | `--compilation-config` | full and piecewise graphs, all custom ops | Eager mode is not the supported candidate. |
 

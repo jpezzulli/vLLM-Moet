@@ -23,7 +23,7 @@ report hashes to
 | Bounded decode | Passed on sealed overlay and clean checkout | Same 37-input/1,024-output request: sealed 55.016 tok/s, clean 53.829 tok/s after first token (-2.16%); clean TTFT 0.4520 s and wall 19.4567 s | Other prompts, concurrency, or sampling regimes |
 | DSpark acceptance | Measured on both bounded runs | Sealed 608/1,251 = 48.60%; clean 574/1,350 = 42.52%. Clean positions: 63.11%, 41.11%, 23.33% | Acceptance stability across workloads |
 | Context | Capacity only | Configured limit 393,216; runtime-reported KV capacity 625,757 tokens | A 393,216-token request or retrieval correctness at that length |
-| Frozen quality suites | Not run | None | Quality parity or the prior reasoning/tool-suite scores |
+| Frozen quality suites | Passed twice | Baseline: reasoning 92.66/100 and tools 30/30 reviewed at `reasoning_effort=high`. Production: reasoning 96.86/100 and tools 30/30 automatic/reviewed at `reasoning_effort=max`, `top_p=0.95`; see [mapped-W2 quality validation](mapped-w2-quality-validation.md) | Setting-level causality, arbitrary-workload quality, or multi-pass variance |
 | Soak/reload | Not run | None | Long-running stability and repeated in-process teardown |
 | Container | Not validated | None | Image build or container serving |
 

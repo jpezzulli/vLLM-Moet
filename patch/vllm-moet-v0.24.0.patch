@@ -432,10 +432,10 @@ index 000000000..9901d1c96
 +        abort.assert_called_once_with(40)
 diff --git a/tests/model_executor/layers/test_moe_w2_persistence.py b/tests/model_executor/layers/test_moe_w2_persistence.py
 new file mode 100644
-index 000000000..b6a67ec37
+index 000000000..fa4323478
 --- /dev/null
 +++ b/tests/model_executor/layers/test_moe_w2_persistence.py
-@@ -0,0 +1,652 @@
+@@ -0,0 +1,670 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +
@@ -780,14 +780,10 @@ index 000000000..b6a67ec37
 +        ),
 +        (
 +            True,
-+            SimpleNamespace(
-+                method="dspark",
-+                draft_model_config=SimpleNamespace(hf_config=SimpleNamespace()),
-+            ),
-+            3,
-+            "requires DSpark draft-layer metadata",
++            _dspark_config(),
++            2,
++            "must match DSpark's resolved draft layer count",
 +        ),
-+        (True, _dspark_config(), 2, "must match DSpark's draft layer count"),
 +    ],
 +)
 +def test_w2_mtp_rejects_unsupported_runtime_configs(
@@ -803,6 +799,28 @@ index 000000000..b6a67ec37
 +    ):
 +        with pytest.raises(ValueError, match=match):
 +            moe_w2_cubit._layer_contract(_contract_layer())
++
++
++def test_w2_mtp_missing_metadata_defers_until_dspark_construction(monkeypatch):
++    monkeypatch.setenv("VLLM_MOE_W2_MTP_LAYERS", "3")
++    monkeypatch.setattr(moe_w2_delta, "base_enabled", lambda: False)
++    monkeypatch.setattr(moe_w2_gate, "enabled", lambda: False)
++    spec_config = SimpleNamespace(
++        method="dspark",
++        draft_model_config=SimpleNamespace(hf_config=SimpleNamespace()),
++    )
++    with mock.patch(
++        "vllm.config.get_current_vllm_config",
++        return_value=_v2_contract_config(spec_config),
++    ):
++        moe_w2_cubit._layer_contract(_contract_layer())
++
++
++def test_w2_mtp_deferred_validation_uses_resolved_dspark_count(monkeypatch):
++    monkeypatch.setenv("VLLM_MOE_W2_MTP_LAYERS", "3")
++    moe_w2_cubit.validate_mtp_layer_count(3)
++    with pytest.raises(ValueError, match="resolved draft layer count"):
++        moe_w2_cubit.validate_mtp_layer_count(2)
 +
 +
 +def test_w2_mtp_accepts_complete_dspark_draft(monkeypatch):
@@ -3145,10 +3163,10 @@ index 000000000..d26ce2cf4
 +        "on" if _verify() else "off")
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
 new file mode 100644
-index 000000000..9e9b96e35
+index 000000000..1cf182f3a
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
-@@ -0,0 +1,2850 @@
+@@ -0,0 +1,2864 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""Routed experts on 2-bit tensor-sym planes (cubit moe_w2) for the
@@ -3448,6 +3466,27 @@ index 000000000..9e9b96e35
 +    return value
 +
 +
++def validate_mtp_layer_count(available: int) -> None:
++    """Validate the resolved DSpark layer count once its model is built.
++
++    Target MoE layers are constructed before the DSpark draft model. Some
++    checkpoints omit ``n_mtp_layers`` and let the draft implementation resolve
++    its model-specific default, so create-time target validation cannot require
++    that metadata. The draft constructor calls this function with the count it
++    will actually instantiate, preserving a fail-closed whole-draft check.
++    """
++    configured = _mtp_layer_count()
++    if not configured:
++        return
++    if available <= 0:
++        raise ValueError(
++            f"DSpark resolved an invalid draft layer count: {available}")
++    if configured != available:
++        raise ValueError(
++            "VLLM_MOE_W2_MTP_LAYERS must match DSpark's resolved draft "
++            f"layer count ({available}), got {configured}")
++
++
 +def _layer_index(layer_name: str) -> int | None:
 +    import re
 +
@@ -3714,15 +3753,8 @@ index 000000000..9e9b96e35
 +            draft_config = getattr(spec_config, "draft_model_config", None)
 +            draft_hf_config = getattr(draft_config, "hf_config", None)
 +            available = getattr(draft_hf_config, "n_mtp_layers", None)
-+            if not available:
-+                raise ValueError(
-+                    "VLLM_MOE_W2_MTP_LAYERS requires DSpark draft-layer "
-+                    "metadata (n_mtp_layers) to validate the complete draft"
-+                )
-+            if mtp_layers != available:
-+                raise ValueError(
-+                    "VLLM_MOE_W2_MTP_LAYERS must match DSpark's draft "
-+                    f"layer count ({available}), got {mtp_layers}")
++            if available is not None:
++                validate_mtp_layer_count(int(available))
 +        pc = cfg.parallel_config
 +        if (getattr(pc, "use_ubatching", False)
 +                or getattr(pc, "ubatch_size", 0)):
@@ -12087,10 +12119,10 @@ index 44e486db7..d03eba3d4 100644
      "DeepseekV4ForCausalLM",
 diff --git a/vllm/models/deepseek_v4/nvidia/dspark.py b/vllm/models/deepseek_v4/nvidia/dspark.py
 new file mode 100644
-index 000000000..be4a87b32
+index 000000000..634015e8d
 --- /dev/null
 +++ b/vllm/models/deepseek_v4/nvidia/dspark.py
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,496 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""DSpark draft model for DeepSeek-V4 (semi-autoregressive speculative decoding).
@@ -12160,6 +12192,14 @@ index 000000000..be4a87b32
 +        self.target_layer_ids = tuple(config.dspark_target_layer_ids)
 +
 +        self.num_dspark_layers = getattr(config, "n_mtp_layers", None) or 3
++        # Target layers are constructed before this draft model, and some
++        # checkpoints rely on DSpark's model-specific default instead of
++        # publishing n_mtp_layers. Validate MoET's complete-draft selection
++        # against the count this model will actually instantiate.
++        from vllm.model_executor.layers.quantization.utils import moe_w2_cubit
++
++        if moe_w2_cubit.enabled():
++            moe_w2_cubit.validate_mtp_layer_count(self.num_dspark_layers)
 +
 +        # Shared with the target (aliased by the speculator's loading utility).
 +        self.embed_tokens = VocabParallelEmbedding(

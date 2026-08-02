@@ -18,6 +18,37 @@ cannot even fit on. Three ideas carry it:
    bit‑deterministic), an **NVFP4 KV cache** (352 B/token), and agent‑ready tool/reasoning
    parsing.
 
+## Runner V2 mapped-host W2 candidate
+
+The repository now includes an opt-in, targeted placement path for complete
+Runner V2 MXFP4-derived W2 layers in NUMA-local CUDA-mapped host memory. It is
+not an automatic CUDA allocator fallback: only explicitly selected full layers
+move, their existing cubin pointers read the canonical mapped allocation over
+PCIe, and no redundant complete GPU W2 copy is retained.
+
+The currently supported and bounded candidate is DeepSeek-V4-Flash on one
+96 GB RTX PRO 6000: DSpark-3 GPU-resident, target W2 keys 40–42 mapped,
+512 FP4 correction slots (6 GiB), FP8 MLA KV, normal full and piecewise CUDA
+graphs, `gpu_memory_utilization=0.988`, and a configured 393,216-token limit.
+It requires Linux x86_64, CUDA mapped-host/UVA support, GPU-local NUMA pages,
+and sufficient page-lockable host RAM.
+
+The sealed run completed startup, arithmetic inference, and one exact
+1,024-token decode at 55.02 tok/s after the first token, with 1,057 MiB
+physical VRAM free after capture. The runtime reported 625,757 tokens of KV
+capacity. Neither the configured 393,216-token limit nor that capacity is an
+exercised-context result, and the frozen quality suites, soak testing, and
+container validation have not been run for this candidate.
+
+Use the fixed recipe
+`deepseek-v4-flash/pro6000x1-mapped-w2-dspark3`, or follow the
+[native build and run guide](docs/native-build-and-run.md). Architecture,
+configuration, evidence boundaries, and troubleshooting are documented in
+[docs/architecture.md](docs/architecture.md),
+[docs/configuration.md](docs/configuration.md),
+[docs/validation.md](docs/validation.md), and
+[docs/troubleshooting.md](docs/troubleshooting.md).
+
 ---
 
 ## GLM‑5.2 (753B) — the headline model

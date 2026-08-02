@@ -20,6 +20,24 @@ If your change touches vLLM code, it goes to the **fork branch first**; the
 patch is derived afterwards. A change that exists only inside the patch file
 WILL be erased by somebody's next regeneration.
 
+## Mapped-host W2 checks and reporting
+
+For the mapped-host W2 path, run the focused source tests before regenerating:
+
+```bash
+python -m pytest -q \
+  tests/model_executor/layers/test_moe_w2_mapped_host.py \
+  tests/model_executor/layers/test_moe_w2_persistence.py
+```
+
+After regeneration, run `python3 tools/check_patch_files.py`,
+`python3 bench/runner/lint.py`, and
+`python3 docker/serve_recipe.py deepseek-v4-flash/pro6000x1-mapped-w2-dspark3 --print`.
+Hardware validation must use normal CUDA graphs and inspect the mapped audit.
+Never report startup capacity or configured context as an exercised-context
+result; state configured limit, runtime-reported capacity, and actual request
+length separately.
+
 ## The two repos on this box
 
 | repo | path | branch | role |

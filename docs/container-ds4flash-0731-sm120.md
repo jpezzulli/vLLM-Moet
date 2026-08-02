@@ -24,6 +24,16 @@ and the 393,216-token configured limit are capacity/admission facts, not
 exercised-context results. Concurrency, soak, other GPUs, other checkpoints,
 tensor parallelism, and orchestration remain unvalidated.
 
+Published image:
+
+```text
+ghcr.io/jpezzulli/vllm-moet:ds4flash-0731-sm120-v4
+sha256:d9dfc7f74ed95c4dc9b4170dff627cd08ec7f1ca4c4f26463d4497b4b4c6e99d
+```
+
+The remote OCI manifest contains 5,900,699,800 bytes of compressed layers.
+No floating `latest` tag was created.
+
 ## Why v3 failed
 
 Runtime commit `95ef4a88…` contains only the FlashAttention package shell and

@@ -177,15 +177,16 @@ index 000000000..c4b64f25b
 +}
 diff --git a/tests/model_executor/layers/test_moe_w2_mapped_host.py b/tests/model_executor/layers/test_moe_w2_mapped_host.py
 new file mode 100644
-index 000000000..9901d1c96
+index 000000000..9a47e3ae4
 --- /dev/null
 +++ b/tests/model_executor/layers/test_moe_w2_mapped_host.py
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,363 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +
 +import ctypes
 +from contextlib import nullcontext
++from pathlib import Path
 +from types import SimpleNamespace
 +from unittest import mock
 +
@@ -250,6 +251,119 @@ index 000000000..9901d1c96
 +    cfg = moe_w2_mapped_host.config()
 +    assert cfg.requested_numa_node == 0
 +    assert cfg.requested_pci_bdf == "0000:31:00.0"
++
++
++def _topology_config(*, node=None, pci=None):
++    return moe_w2_mapped_host.MappedHostConfig(
++        layers=frozenset({40}),
++        requested_numa_node=node,
++        requested_pci_bdf=pci,
++        audit_path=None,
++    )
++
++
++def _install_topology_files(
++    monkeypatch,
++    *,
++    reported_node,
++    mems_allowed,
++    pci_cpus="0-3",
++    node_cpus=None,
++    existing_nodes=(0, 1),
++):
++    pci = "0000:31:00.0"
++    files = {
++        f"/sys/bus/pci/devices/{pci}/numa_node": str(reported_node),
++        f"/sys/bus/pci/devices/{pci}/local_cpulist": pci_cpus,
++        "/proc/self/status": f"Mems_allowed_list:\t{mems_allowed}\n",
++    }
++    for node, cpus in (node_cpus or {}).items():
++        files[f"/sys/devices/system/node/node{node}/cpulist"] = cpus
++
++    def read_text(path, *args, **kwargs):
++        value = files.get(str(path))
++        if value is None:
++            raise FileNotFoundError(str(path))
++        return value
++
++    monkeypatch.setattr(Path, "read_text", read_text)
++    monkeypatch.setattr(
++        Path,
++        "is_dir",
++        lambda path: (
++            str(path)
++            in {f"/sys/devices/system/node/node{node}" for node in existing_nodes}
++        ),
++    )
++    monkeypatch.setattr(moe_w2_mapped_host, "_active_gpu_pci_bdf", lambda: pci)
++    return pci
++
++
++def test_topology_auto_selects_valid_gpu_local_node_one(monkeypatch):
++    pci = _install_topology_files(
++        monkeypatch, reported_node=1, mems_allowed="0-1", pci_cpus="4-7"
++    )
++    topology = moe_w2_mapped_host._resolve_topology(_topology_config())
++    assert topology == moe_w2_mapped_host.Topology(pci, 1, frozenset(range(4, 8)))
++
++
++def test_valid_detected_topology_remains_authoritative(monkeypatch):
++    _install_topology_files(monkeypatch, reported_node=1, mems_allowed="0-1")
++    with pytest.raises(RuntimeError, match="is NUMA node 1.*requested 0"):
++        moe_w2_mapped_host._resolve_topology(_topology_config(node=0))
++
++
++def test_topology_minus_one_falls_back_to_sole_effective_node(monkeypatch):
++    pci = _install_topology_files(
++        monkeypatch,
++        reported_node=-1,
++        mems_allowed="3",
++        node_cpus={3: "12-15"},
++        existing_nodes=(3,),
++    )
++    topology = moe_w2_mapped_host._resolve_topology(_topology_config())
++    assert topology == moe_w2_mapped_host.Topology(pci, 3, frozenset(range(12, 16)))
++
++
++def test_topology_minus_one_requires_override_for_multiple_nodes(monkeypatch):
++    _install_topology_files(monkeypatch, reported_node=-1, mems_allowed="0-1")
++    with pytest.raises(RuntimeError, match="set VLLM_MOE_W2_MAPPED_NUMA_NODE"):
++        moe_w2_mapped_host._resolve_topology(_topology_config())
++
++
++def test_topology_minus_one_accepts_valid_override(monkeypatch):
++    pci = _install_topology_files(
++        monkeypatch,
++        reported_node=-1,
++        mems_allowed="0-1",
++        node_cpus={1: "4-7"},
++    )
++    topology = moe_w2_mapped_host._resolve_topology(_topology_config(node=1))
++    assert topology == moe_w2_mapped_host.Topology(pci, 1, frozenset(range(4, 8)))
++
++
++@pytest.mark.parametrize(
++    ("reported_node", "override"),
++    [(1, None), (-1, 2)],
++)
++def test_topology_rejects_node_outside_effective_memory_nodes(
++    monkeypatch, reported_node, override
++):
++    _install_topology_files(
++        monkeypatch,
++        reported_node=reported_node,
++        mems_allowed="0",
++        node_cpus={2: "8-11"},
++        existing_nodes=(0, 1, 2),
++    )
++    with pytest.raises(RuntimeError, match="not permitted by Mems_allowed_list"):
++        moe_w2_mapped_host._resolve_topology(_topology_config(node=override))
++
++
++def test_topology_keeps_pci_override_validation(monkeypatch):
++    _install_topology_files(monkeypatch, reported_node=1, mems_allowed="0-1")
++    with pytest.raises(RuntimeError, match="MAPPED_PCI requested 0000:41:00.0"):
++        moe_w2_mapped_host._resolve_topology(_topology_config(pci="0000:41:00.0"))
 +
 +
 +def test_plan_layout_matches_validated_ds4_layer_size():
@@ -8936,10 +9050,10 @@ index 000000000..f9db2751c
 +            f"(top-{_PILOT_K}, n={tot[1]})")
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_mapped_host.py b/vllm/model_executor/layers/quantization/utils/moe_w2_mapped_host.py
 new file mode 100644
-index 000000000..bf69ddb75
+index 000000000..6b74fcbf9
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_mapped_host.py
-@@ -0,0 +1,757 @@
+@@ -0,0 +1,820 @@
 +"""Canonical CUDA-mapped host backing for selected Runner V2 W2 layers.
 +
 +This module implements a deliberately narrow placement policy.  Selected
@@ -9134,6 +9248,40 @@ index 000000000..bf69ddb75
 +    return result
 +
 +
++def _effective_memory_nodes() -> frozenset[int]:
++    try:
++        status = Path("/proc/self/status").read_text()
++    except OSError as exc:
++        raise RuntimeError(
++            f"cannot read effective memory-node constraints: {exc}"
++        ) from exc
++    for line in status.splitlines():
++        if line.startswith("Mems_allowed_list:"):
++            try:
++                nodes = _parse_cpu_list(line.partition(":")[2])
++            except ValueError as exc:
++                raise RuntimeError(
++                    f"cannot parse effective memory nodes from {line!r}"
++                ) from exc
++            if nodes:
++                return frozenset(nodes)
++            break
++    raise RuntimeError("/proc/self/status has no effective memory nodes")
++
++
++def _node_cpu_list(node: int) -> set[int]:
++    node_path = Path(f"/sys/devices/system/node/node{node}")
++    if not node_path.is_dir():
++        raise RuntimeError(f"NUMA node {node} does not exist at {node_path}")
++    try:
++        cpus = _parse_cpu_list((node_path / "cpulist").read_text())
++    except (OSError, ValueError) as exc:
++        raise RuntimeError(f"cannot read CPU list for NUMA node {node}: {exc}") from exc
++    if not cpus:
++        raise RuntimeError(f"NUMA node {node} has an empty CPU list")
++    return cpus
++
++
 +def _active_gpu_pci_bdf() -> str:
 +    props = torch.cuda.get_device_properties(torch.cuda.current_device())
 +    return (
@@ -9164,23 +9312,52 @@ index 000000000..bf69ddb75
 +    pci_path = Path("/sys/bus/pci/devices") / actual_pci
 +    try:
 +        actual_node = int((pci_path / "numa_node").read_text().strip())
-+        local_cpus = _parse_cpu_list((pci_path / "local_cpulist").read_text())
 +    except (OSError, ValueError) as exc:
 +        raise RuntimeError(
 +            f"cannot resolve NUMA locality for active GPU {actual_pci} "
 +            f"from {pci_path}: {exc}"
 +        ) from exc
-+    if actual_node < 0:
-+        raise RuntimeError(f"active GPU {actual_pci} has no NUMA node in sysfs")
-+    if cfg.requested_numa_node is not None and cfg.requested_numa_node != actual_node:
++    allowed_nodes = _effective_memory_nodes()
++    if actual_node >= 0:
++        selected_node = actual_node
++        if (
++            cfg.requested_numa_node is not None
++            and cfg.requested_numa_node != actual_node
++        ):
++            raise RuntimeError(
++                f"active GPU {actual_pci} is NUMA node {actual_node}, but "
++                "VLLM_MOE_W2_MAPPED_NUMA_NODE requested "
++                f"{cfg.requested_numa_node}"
++            )
++        try:
++            local_cpus = _parse_cpu_list((pci_path / "local_cpulist").read_text())
++        except (OSError, ValueError) as exc:
++            raise RuntimeError(
++                f"cannot resolve local CPUs for active GPU {actual_pci} "
++                f"from {pci_path}: {exc}"
++            ) from exc
++    else:
++        if cfg.requested_numa_node is not None:
++            selected_node = cfg.requested_numa_node
++        elif len(allowed_nodes) == 1:
++            selected_node = next(iter(allowed_nodes))
++        else:
++            raise RuntimeError(
++                f"active GPU {actual_pci} reports NUMA node -1 and effective "
++                f"memory nodes are {sorted(allowed_nodes)}; set "
++                "VLLM_MOE_W2_MAPPED_NUMA_NODE explicitly"
++            )
++        local_cpus = _node_cpu_list(selected_node)
++    if selected_node not in allowed_nodes:
 +        raise RuntimeError(
-+            f"active GPU {actual_pci} is NUMA node {actual_node}, but "
-+            "VLLM_MOE_W2_MAPPED_NUMA_NODE requested "
-+            f"{cfg.requested_numa_node}"
++            f"NUMA node {selected_node} selected for active GPU {actual_pci} "
++            f"is not permitted by Mems_allowed_list {sorted(allowed_nodes)}"
 +        )
++    if not (Path(f"/sys/devices/system/node/node{selected_node}").is_dir()):
++        raise RuntimeError(f"selected NUMA node {selected_node} does not exist")
 +    if not local_cpus:
 +        raise RuntimeError(f"active GPU {actual_pci} has an empty local CPU list")
-+    return Topology(actual_pci, actual_node, frozenset(local_cpus))
++    return Topology(actual_pci, selected_node, frozenset(local_cpus))
 +
 +
 +def _load_cudart():

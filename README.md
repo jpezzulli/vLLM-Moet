@@ -40,8 +40,7 @@ capacity. Neither the configured 393,216-token limit nor that capacity is an
 exercised-context result. The frozen quality suites passed: the preserved
 `reasoning_effort=high` baseline scored 92.66/100 reasoning and 30/30 tools;
 the production `reasoning_effort=max`, `top_p=0.95` shape scored 96.86/100
-reasoning and 30/30 tools. Soak testing and container validation have not been
-run for this candidate.
+reasoning and 30/30 tools. Soak testing has not been run for this candidate.
 
 A clean checkout using native extensions built from the pinned source
 reproduced normal graph startup, the same 625,757-token KV capacity and
@@ -59,6 +58,12 @@ evidence boundaries, and troubleshooting are documented in
 [docs/configuration.md](docs/configuration.md),
 [docs/validation.md](docs/validation.md), and
 [docs/troubleshooting.md](docs/troubleshooting.md).
+
+The source-built single-GPU OCI recipe is documented in
+[docs/container-ds4flash-0731-sm120.md](docs/container-ds4flash-0731-sm120.md).
+Its v4 image completed normal graph startup and basic reasoning/tool-call smoke
+checks on the validated RTX PRO 6000 host. The container result is deliberately
+reported separately from the native frozen quality-suite evidence above.
 
 ---
 

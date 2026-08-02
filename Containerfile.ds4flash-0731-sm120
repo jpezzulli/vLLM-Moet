@@ -1,0 +1,227 @@
+# Reproducible single-GPU Pennyroyal candidate for the hardware-validated
+# DeepSeek-V4-Flash-0731 mapped-host W2 serving shape.
+#
+# Native extensions, the vLLM FlashAttention CuteDSL package, and DeepGEMM are
+# built from the source revisions declared below. No live native installation
+# or host-built wheel is part of the build context.
+FROM registry.fedoraproject.org/fedora@sha256:b5f1d8384c4780020a9b965ade8758b0e4a816dd2f15925666d744ba382fce1e AS runtime-base
+
+ARG VLLM_BASE_COMMIT=ee0da84ab9e04ac7610e28580af62c365e898389
+ARG VLLM_MOET_SOURCE_COMMIT=95ef4a88c63c9ed88f2384977e05d788897af6c3
+ARG VLLM_MOET_PUBLICATION_COMMIT=30962258a5404df3d08fccf86b86189d04cb1456
+ARG VLLM_MOET_PATCH_SHA256=6224f37a1e0b36d2cbec6e32977f08066236444e8510b0fd085415b668f1e9f7
+ARG RUNTIME_LOCK_SHA256=f3d6db7dcb2b74d265a30566ae1fac51b0a4b702826b8537499d5a5bdf6d4dcc
+ARG DEEPGEMM_COMMIT=a6b593d2826719dcf4892609af7b84ee23aaf32a
+ARG VLLM_FLASH_ATTN_COMMIT=803020a8fa15407871341d41eba4919ade2ee1ee
+ARG VALIDATED_LAUNCHER_SHA256=e039e22705e20211da0f6121e6cd070aaca1466793b39172ca4748130ae9d995
+
+LABEL org.opencontainers.image.title="Pennyroyal vLLM-MoET DeepSeek-V4-Flash-0731 SM120 candidate" \
+      org.opencontainers.image.description="Runner V2, DSpark-3, mapped W2 layers 40-42, 6 GiB FP4 correction, DeepGEMM" \
+      org.opencontainers.image.source="https://github.com/jpezzulli/vLLM-Moet" \
+      org.opencontainers.image.revision="${VLLM_MOET_PUBLICATION_COMMIT}" \
+      io.jpezzulli.vllm.base-commit="${VLLM_BASE_COMMIT}" \
+      io.jpezzulli.vllm-moet.source-commit="${VLLM_MOET_SOURCE_COMMIT}" \
+      io.jpezzulli.vllm-moet.patch-sha256="${VLLM_MOET_PATCH_SHA256}" \
+      io.jpezzulli.vllm-moet.runtime-lock-sha256="${RUNTIME_LOCK_SHA256}" \
+      io.jpezzulli.deepgemm.commit="${DEEPGEMM_COMMIT}" \
+      io.jpezzulli.vllm-flash-attn.commit="${VLLM_FLASH_ATTN_COMMIT}" \
+      io.jpezzulli.vllm-moet.native-artifacts="built from pinned source" \
+      io.jpezzulli.pennyroyal.launcher-sha256="${VALIDATED_LAUNCHER_SHA256}" \
+      io.jpezzulli.validation.boundary="single RTX PRO 6000 SM120; configured context is not exercised context"
+
+# Versions are pinned against the immutable Fedora base. The pip installation
+# report retained in /opt/provenance records artifact URLs and archive hashes.
+RUN dnf install -y --setopt=install_weak_deps=False \
+      python3-3.14.6-1.fc44 \
+      python3-devel-3.14.6-1.fc44 \
+      python3-pip-26.0.1-2.fc44 \
+      git-2.55.0-1.fc44 \
+      gcc15-15.3.1-1.fc44 \
+      gcc15-c++-15.3.1-1.fc44 \
+      numactl-2.0.19-4.fc44 \
+      numactl-libs-2.0.19-4.fc44 \
+      pciutils-3.15.0-1.fc44 \
+      procps-ng-4.0.6-1.fc44 \
+      findutils-4.10.0-7.fc44 \
+      shadow-utils-4.19.0-7.fc44 \
+      which-2.25-1.fc44 \
+    && dnf clean all \
+    && python3 -m venv /opt/venv \
+    && mkdir -p /opt/provenance /opt/vllm-moet/kernels/cubins-sm120 \
+                /models /packs /cache /run/vllm-moet
+
+ENV PATH=/opt/venv/bin:/usr/local/cuda/bin:/usr/bin:/bin \
+    VIRTUAL_ENV=/opt/venv \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    VLLM_NO_USAGE_STATS=1
+
+COPY container/ds4flash-0731-sm120/requirements-runtime.lock.txt /opt/provenance/requirements-runtime.lock.txt
+RUN echo "${RUNTIME_LOCK_SHA256}  /opt/provenance/requirements-runtime.lock.txt" | sha256sum --check - \
+    && /opt/venv/bin/python -m pip install --no-cache-dir \
+         --report /opt/provenance/pip-install-report.json \
+         -r /opt/provenance/requirements-runtime.lock.txt
+
+# Reconstruct the exact patched source rather than importing a mutable local
+# worktree. The generated patch itself remains untouched and source-controlled.
+RUN git init /opt/vllm \
+    && git -C /opt/vllm remote add origin https://github.com/vllm-project/vllm.git \
+    && git -C /opt/vllm fetch --depth 1 origin "${VLLM_BASE_COMMIT}" \
+    && git -C /opt/vllm checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/vllm rev-parse HEAD)" = "${VLLM_BASE_COMMIT}"
+COPY patch/vllm-moet-v0.24.0.patch /opt/provenance/vllm-moet-v0.24.0.patch
+RUN echo "${VLLM_MOET_PATCH_SHA256}  /opt/provenance/vllm-moet-v0.24.0.patch" | sha256sum --check - \
+    && git -C /opt/vllm apply --check /opt/provenance/vllm-moet-v0.24.0.patch \
+    && git -C /opt/vllm apply /opt/provenance/vllm-moet-v0.24.0.patch
+
+# The CUDA 13.3 compiler and headers are pinned Python distributions in the
+# validated dependency lock. Present their standard layout to runtime JITs.
+RUN cuda_root=$(/opt/venv/bin/python -c \
+      'import site; print(site.getsitepackages()[0] + "/nvidia/cu13")') \
+    && test -x "${cuda_root}/bin/nvcc" \
+    && ln -s "${cuda_root}" /usr/local/cuda \
+    && VLLM_TARGET_DEVICE=empty \
+       VLLM_VERSION_OVERRIDE=0.24.1.dev0+gee0da84ab.d20260802.empty \
+       /opt/venv/bin/python -m pip install --no-cache-dir --no-deps \
+         --no-build-isolation -e /opt/vllm \
+    && /opt/venv/bin/python -m pip freeze --all > /opt/provenance/pip-freeze.txt \
+    && rpm -qa | sort > /opt/provenance/rpm-packages.txt \
+    && /usr/local/cuda/bin/nvcc --version > /opt/provenance/nvcc-version.txt
+
+COPY kernels/cubins-sm120/ /opt/vllm-moet/kernels/cubins-sm120/
+COPY container/ds4flash-0731-sm120/topology-preflight.py /opt/vllm-moet/topology-preflight.py
+COPY container/ds4flash-0731-sm120/entrypoint.sh /usr/local/bin/pennyroyal-entrypoint
+RUN chmod 0755 /usr/local/bin/pennyroyal-entrypoint /opt/vllm-moet/topology-preflight.py \
+    && sha256sum /opt/vllm-moet/kernels/cubins-sm120/* > /opt/provenance/cubins.sha256 \
+    && /opt/venv/bin/python - <<'PY'
+import torch
+import vllm
+from vllm.model_executor.layers.quantization.utils import moe_w2_mapped_host
+from vllm.v1.worker.gpu.spec_decode.dspark import speculator
+print("vllm", vllm.__version__)
+print("torch", torch.__version__)
+print("mapped_host", moe_w2_mapped_host.__file__)
+print("dspark", speculator.__file__)
+PY
+
+# Torch's dependency closure intentionally retains CUDA 13.0 runtime wheels,
+# but the validated DeepGEMM JIT uses a coherent system CUDA 13.3 compiler and
+# development-header set. The pip-provided nvcc is also 13.3, while its
+# cuda.h remains 13.0; exposing that mixed tree as CUDA_HOME is invalid. Install
+# the exact minimal Fedora 44 CUDA 13.3 compiler/header closure used natively.
+COPY container/ds4flash-0731-sm120/cuda-fedora44.repo /etc/yum.repos.d/cuda-fedora44.repo
+RUN rm /usr/local/cuda \
+    && dnf install -y --setopt=install_weak_deps=False \
+         cuda-nvcc-13-3-13.3.73-1 \
+         cuda-cudart-devel-13-3-13.3.29-1 \
+         cccl-13-3-13.3.3.4.1-1 \
+    && dnf clean all \
+    && test "$(readlink -f /usr/local/cuda)" = /usr/local/cuda-13.3 \
+    && test "$(sed -n 's/^#define CUDA_VERSION //p' /usr/local/cuda/include/cuda.h)" = 13030 \
+    && /usr/local/cuda/bin/nvcc --version > /opt/provenance/nvcc-version.txt \
+    && rpm -qa | sort > /opt/provenance/rpm-packages.txt \
+    && sha256sum \
+         /usr/local/cuda/bin/nvcc \
+         /usr/local/cuda/include/cuda.h \
+         /usr/local/cuda/include/cccl/cuda/std/__cccl/cuda_toolkit.h \
+         > /opt/provenance/cuda-toolkit-critical-files.sha256
+
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+EXPOSE 8001
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/pennyroyal-entrypoint"]
+
+# Build the Python-stable-ABI vLLM extensions and DeepGEMM wheel from their
+# declared source revisions. Python 3.13 is builder-only because the pinned
+# vllm-flash-attn source supports build interpreters through 3.13; the stable
+# ABI artifacts are consumed by the Python 3.14 runtime image.
+FROM runtime-base AS native-builder
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+      python3.13-3.13.14-1.fc44 \
+      python3.13-devel-3.13.14-1.fc44 \
+      rust-1.97.1-1.fc44 \
+      cargo-1.97.1-1.fc44 \
+    && dnf clean all \
+    && /usr/bin/python3.13 -m venv /opt/build-venv-py313 \
+    && /opt/build-venv-py313/bin/python -m pip install --no-cache-dir \
+         --index-url https://download.pytorch.org/whl/cu130 \
+         torch==2.11.0+cu130 torchvision==0.26.0+cu130 torchaudio==2.11.0+cu130 \
+    && /opt/build-venv-py313/bin/python -m pip install --no-cache-dir \
+         build==1.5.0 cmake==4.4.0 Jinja2==3.1.6 ninja==1.13.0 \
+         packaging==26.2 regex==2026.7.19 setuptools==80.10.2 \
+         setuptools-rust==1.13.0 setuptools-scm==10.2.1 wheel==0.47.0
+
+# Compile against NVIDIA's pinned CUDA 13.3 development-library closure. This
+# is builder-only; the final image retains the smaller runtime/JIT toolkit and
+# receives the real driver from CDI.
+RUN dnf install -y --setopt=install_weak_deps=False \
+      cuda-libraries-devel-13-3-13.3.1-1 \
+    && dnf clean all
+
+RUN cd /opt/vllm \
+    && VLLM_USE_PRECOMPILED=0 \
+       CUDA_HOME=/usr/local/cuda CUDA_PATH=/usr/local/cuda \
+       CC=/usr/bin/gcc-15 CXX=/usr/bin/g++-15 NVCC_CCBIN=/usr/bin/g++-15 \
+       MAX_JOBS=16 NVCC_THREADS=2 CMAKE_BUILD_TYPE=Release \
+       TORCH_CUDA_ARCH_LIST=12.0a \
+       /opt/build-venv-py313/bin/python -m pip install --no-cache-dir \
+         --no-deps --no-build-isolation -e . \
+    && test -f vllm/_C_stable_libtorch.abi3.so \
+    && test -f vllm/_moe_C_stable_libtorch.abi3.so \
+    && test -f vllm/vllm_flash_attn/_vllm_fa2_C.abi3.so \
+    && test -f vllm/vllm_flash_attn/_vllm_fa3_C.abi3.so \
+    && test -f vllm/vllm_flash_attn/cute/utils.py \
+    && test "$(sed -n 's/.*GIT_TAG \([0-9a-f]*\).*/\1/p' cmake/external_projects/vllm_flash_attn.cmake)" = "${VLLM_FLASH_ATTN_COMMIT}"
+
+RUN git init /opt/DeepGEMM \
+    && git -C /opt/DeepGEMM remote add origin https://github.com/deepseek-ai/DeepGEMM.git \
+    && git -C /opt/DeepGEMM fetch --depth 1 origin "${DEEPGEMM_COMMIT}" \
+    && git -C /opt/DeepGEMM checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/DeepGEMM rev-parse HEAD)" = "${DEEPGEMM_COMMIT}" \
+    && git -C /opt/DeepGEMM submodule update --init --recursive \
+    && cd /opt/DeepGEMM \
+    && CUDA_HOME=/usr/local/cuda CUDA_PATH=/usr/local/cuda \
+       CC=/usr/bin/gcc-15 CXX=/usr/bin/g++-15 NVCC_CCBIN=/usr/bin/g++-15 \
+       /opt/venv/bin/python setup.py bdist_wheel
+
+RUN mkdir -p /out/vllm/third_party /out/wheels /out/provenance \
+    && install -D -m 0755 /opt/vllm/vllm/_C_stable_libtorch.abi3.so /out/vllm/_C_stable_libtorch.abi3.so \
+    && install -D -m 0755 /opt/vllm/vllm/_moe_C_stable_libtorch.abi3.so /out/vllm/_moe_C_stable_libtorch.abi3.so \
+    && install -D -m 0755 /opt/vllm/vllm/_qutlass_C.abi3.so /out/vllm/_qutlass_C.abi3.so \
+    && install -D -m 0755 /opt/vllm/vllm/_rust_tool_parser.abi3.so /out/vllm/_rust_tool_parser.abi3.so \
+    && install -D -m 0755 /opt/vllm/vllm/cumem_allocator.abi3.so /out/vllm/cumem_allocator.abi3.so \
+    && install -D -m 0755 /opt/vllm/vllm/spinloop.abi3.so /out/vllm/spinloop.abi3.so \
+    && cp -a /opt/vllm/vllm/vllm_flash_attn /out/vllm/ \
+    && cp -a /opt/vllm/vllm/third_party/deep_gemm /out/vllm/third_party/ \
+    && cp /opt/DeepGEMM/dist/deep_gemm-*.whl /out/wheels/ \
+    && find /out -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && printf '%s\n' "${VLLM_BASE_COMMIT}" > /out/provenance/vllm-base-commit.txt \
+    && printf '%s\n' "${VLLM_MOET_SOURCE_COMMIT}" > /out/provenance/vllm-moet-source-commit.txt \
+    && printf '%s\n' "${VLLM_FLASH_ATTN_COMMIT}" > /out/provenance/vllm-flash-attn-commit.txt \
+    && printf '%s\n' "${DEEPGEMM_COMMIT}" > /out/provenance/deepgemm-commit.txt \
+    && cd /out \
+    && find vllm wheels -type f -print0 | sort -z | xargs -0 sha256sum > provenance/source-built-artifacts.sha256
+
+FROM runtime-base AS final
+
+COPY --from=native-builder /out/vllm/ /opt/vllm/vllm/
+COPY --from=native-builder /out/wheels/ /opt/source-built-wheels/
+COPY --from=native-builder /out/provenance/ /opt/provenance/
+RUN /opt/venv/bin/python -m pip install --no-cache-dir --no-deps \
+      /opt/source-built-wheels/deep_gemm-*.whl \
+    && rm -rf /opt/source-built-wheels \
+    && test -f /opt/vllm/vllm/vllm_flash_attn/cute/utils.py \
+    && test -x /opt/vllm/vllm/vllm_flash_attn/_vllm_fa2_C.abi3.so \
+    && test -x /opt/vllm/vllm/vllm_flash_attn/_vllm_fa3_C.abi3.so \
+    && /opt/venv/bin/python -m compileall -q /opt/vllm/vllm/vllm_flash_attn/cute \
+    && /opt/venv/bin/python - <<'PY'
+import deep_gemm
+import torch
+import vllm
+print("vllm", vllm.__version__)
+print("torch", torch.__version__)
+print("deep_gemm", deep_gemm.__version__)
+PY

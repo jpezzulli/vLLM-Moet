@@ -48,6 +48,17 @@ capture failure should be investigated at the reported CUDA operation and
 shape. Do not build a duplicate eager-only W2 set. Confirm the first production
 cubin dispatch and stable pointers in the audit file.
 
+## Native operator signature mismatch
+
+An error such as `_moe_C::topk_softplus_sqrt() is missing value for argument
+is_padding` means the Python source and loaded native extension were built from
+different vLLM revisions. A clean-checkout validation reproduced this when
+`VLLM_USE_PRECOMPILED=1` downloaded a moving development extension for the
+pinned v0.24.0 source. It is a binary/source ABI mismatch, not a mapped-W2 or
+model-quality failure. Remove the mismatched extension and follow
+`docs/native-build-and-run.md` to build the stable-ABI extensions from the
+pinned checkout; do not change the Python call to match an unrelated binary.
+
 ## OOM and accounting
 
 `--gpu-memory-utilization` controls vLLM's model/KV budget. The MoET FP4 tier

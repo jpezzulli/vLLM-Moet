@@ -40,6 +40,13 @@ capacity. Neither the configured 393,216-token limit nor that capacity is an
 exercised-context result, and the frozen quality suites, soak testing, and
 container validation have not been run for this candidate.
 
+A clean checkout using native extensions built from the pinned source
+reproduced normal graph startup, the same 625,757-token KV capacity and
+1,057 MiB post-capture free VRAM, correct arithmetic, and the identical
+1,024-token workload at 53.83 tok/s after the first token (2.16% below the
+sealed run). The difference is reported as measured run variation; no speedup
+is claimed.
+
 Use the fixed recipe
 `deepseek-v4-flash/pro6000x1-mapped-w2-dspark3`, or follow the
 [native build and run guide](docs/native-build-and-run.md). Architecture,

@@ -5,13 +5,17 @@
 The runtime source of truth is the owned `jpezzulli/vllm` fork, whose parent
 is `kacper-daftcode/vllm`. The mapped-host feature branch starts at the clean
 Runner V2/DSpark source commit `4cb967b451f4a6ae1b284e3d6e3a8ca601c6027e`.
+Its validated mapped-host tip is
+`98cef19a50765148aba29084dc88da5d16f31700`.
 That lineage ultimately applies over official vLLM tag `v0.24.0`
 (`ee0da84ab9e04ac7610e28580af62c365e898389`).
 
 The publication repository is the owned `jpezzulli/vLLM-Moet` fork, whose
 parent is `kacper-daftcode/vLLM-Moet`. Its mapped-host branch starts after
 publication commit `6ba8f224`, which generated the Runner V2/DSpark patch from
-vLLM commit `4cb967b451f4a6ae1b284e3d6e3a8ca601c6027e`.
+vLLM commit `4cb967b451f4a6ae1b284e3d6e3a8ca601c6027e`. Publication commit
+`42c8b60f61640fb3cbb17968950914aa9534cf3a` carries the byte-exact patch from
+the validated vLLM tip.
 
 vLLM owns:
 
@@ -56,3 +60,8 @@ source was copied byte-for-byte into `tools/cuda_mapped_host_probe/`.
 Local artifact paths are evidence locations on the validation host, not
 repository runtime dependencies. See `docs/validation.md` for hashes and the
 precise boundary between tested and untested claims.
+
+The clean native reproduction is under
+`/opt/ai-artifacts/logs/moet-mapped-w2-clean-validation-20260802-005954`.
+Its `SHA256SUMS` hashes to
+`9f00c763eb7736852c249b261aa1d4609f032d30185008c4a792c27c5982d901`.

@@ -1,0 +1,58 @@
+id: deepseek-v4-flash/pro6000x1-mapped-w2-dspark3
+model: DeepSeek-V4-Flash
+served_name: pennyroyal
+summary: "1x RTX PRO 6000 - mapped W2 layers 40-42, DSpark-3, 6 GiB FP4"
+
+requires:
+  gpus: 1
+  vram_gb: 96
+  host_ram_gb: 192
+
+context: 393216
+load_timeout_s: 2400
+
+# Bounded candidate validated on one 96 GB RTX PRO 6000. The configured
+# context and runtime-reported KV capacity are not exercised-context claims.
+# Topology is derived from the active CUDA device. Set the optional PCI/NUMA
+# guards documented in docs/configuration.md when pinning a particular host.
+env:
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+  VLLM_MOE_W2: "1"
+  VLLM_MOE_W2_FORCE_RESIDENT: "1"
+  VLLM_MOE_W2_DELTA_GB: "6"
+  VLLM_MOE_W2_DELTA_RESERVE_GB: "0"
+  VLLM_MOE_W2_MTP_LAYERS: "3"
+  VLLM_MOE_W2_DELTA_POLICY: "freq"
+  VLLM_MOE_W2_PREFILL_FP4: "1"
+  VLLM_MOE_W2_GATE: "0"
+  VLLM_MOE_W2_AFRAG: "1"
+  VLLM_MOE_W2_FUSED_UNPERMUTE: "0"
+  VLLM_MOE_W2_MAPPED_LAYERS: "40,41,42"
+
+serve_args:
+  - --host 0.0.0.0
+  - --tensor-parallel-size 1
+  - --max-model-len 393216
+  - --max-num-seqs 4
+  - --kv-cache-dtype fp8
+  - --block-size 256
+  - --gpu-memory-utilization 0.988
+  - --max-num-batched-tokens 2048
+  - --enable-prefix-caching
+  - --trust-remote-code
+  - --load-format safetensors
+  - --tokenizer-mode deepseek_v4
+  - --reasoning-parser deepseek_v4
+  - --default-chat-template-kwargs {"enable_thinking":true,"reasoning_effort":"high"}
+  - --enable-auto-tool-choice
+  - --tool-call-parser deepseek_v4
+  - --speculative-config {"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"greedy"}
+  - --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
+
+warmup:
+  decode_requests: 1
+
+suite_params:
+  batch_decode:
+    concurrency: [1]

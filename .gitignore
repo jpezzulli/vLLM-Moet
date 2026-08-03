@@ -14,6 +14,8 @@ internal/
 
 # local artifacts (wheels kept out of git)
 patch/*.whl
+.container-artifacts/
+.container-validation/
 
 # bench: smoke-test results are transient (real releases are committed)
 bench/results/smoke/

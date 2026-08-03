@@ -1,21 +1,23 @@
-# Historical three-layer candidate retained for reproducibility. The current
-# production recipe is pro6000x1-mapped-w2-dspark4.yaml.
-id: deepseek-v4-flash/pro6000x1-mapped-w2-dspark3
-model: DeepSeek-V4-Flash
+id: deepseek-v4-flash/pro6000x1-mapped-w2-dspark4
+model: DeepSeek-V4-Flash-0731
 served_name: pennyroyal
-summary: "HISTORICAL - 1x RTX PRO 6000, mapped W2 40-42, DSpark-3, 6 GiB FP4"
+summary: "1x RTX PRO 6000 - mapped W2 layers 38-42, DSpark-4, 6 GiB FP4, 1M admission"
 
 requires:
   gpus: 1
   vram_gb: 96
   host_ram_gb: 192
 
-# Configured admission only; this request length was not exercised.
-context: 393216
+context: 1000000
 load_timeout_s: 2400
 
-# Candidate validated natively on one RTX PRO 6000. Topology is derived from
-# the active CUDA device; optional PCI/NUMA guards are documented separately.
+# Native runtime requirement: jpezzulli/vllm at
+# a2131dd7a944353e9323566107c72f4a17441024.
+# The older 95ef generated patch and v4 OCI image do not implement this final
+# production shape. Hardware-validated on one RTX PRO 6000. KV capacity was
+# 1,058,256 tokens; one 994,987-token request was exercised. Topology is
+# derived from the active CUDA device. Optional PCI/NUMA guards are documented
+# in BUILD-AND-RUN.md and HOW-IT-WORKS.md.
 env:
   VLLM_USE_V2_MODEL_RUNNER: "1"
   VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
@@ -31,17 +33,16 @@ env:
   VLLM_MOE_W2_GATE: "0"
   VLLM_MOE_W2_AFRAG: "1"
   VLLM_MOE_W2_FUSED_UNPERMUTE: "0"
-  VLLM_MOE_W2_STORE_DIR: "{planes_cache}/packs-ds4"
-  VLLM_MOE_W2_MAPPED_LAYERS: "40,41,42"
+  VLLM_MOE_W2_MAPPED_LAYERS: "38,39,40,41,42"
 
 serve_args:
   - --host 0.0.0.0
   - --tensor-parallel-size 1
-  - --max-model-len 393216
+  - --max-model-len 1000000
   - --max-num-seqs 4
   - --kv-cache-dtype fp8
   - --block-size 256
-  - --gpu-memory-utilization 0.988
+  - --gpu-memory-utilization 0.974
   - --max-num-batched-tokens 2048
   - --enable-prefix-caching
   - --trust-remote-code
@@ -52,7 +53,7 @@ serve_args:
   - --override-generation-config {"top_p":0.95}
   - --enable-auto-tool-choice
   - --tool-call-parser deepseek_v4
-  - --speculative-config {"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"greedy"}
+  - --speculative-config {"method":"dspark","num_speculative_tokens":4,"draft_sample_method":"greedy"}
   - --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
 
 warmup:
@@ -61,8 +62,3 @@ warmup:
 suite_params:
   batch_decode:
     concurrency: [1]
-
-tuning:
-  objective: decode.median_tok_s
-  constraints: ["arithmetic.score>=2"]
-  axes: []

@@ -167,6 +167,31 @@ class ToolSuiteTests(unittest.TestCase):
                 rows[4][field] = value
                 self.assert_plan_rejected(rows)
 
+    def test_boolean_repeats_are_rejected(self):
+        for index, value in ((2, False), (1, True)):
+            with self.subTest(value=value):
+                rows = copy.deepcopy(self.rows)
+                rows[index]["repeat"] = value
+                result = self.assert_plan_rejected(rows)
+                mismatch = result["schedule_integrity"]["mismatches"][0]
+                self.assertEqual(mismatch["actual_repeat_type"], "bool")
+
+    def test_integral_float_repeats_are_rejected(self):
+        for index, value in ((2, 0.0), (1, 1.0)):
+            with self.subTest(value=value):
+                rows = copy.deepcopy(self.rows)
+                rows[index]["repeat"] = value
+                result = self.assert_plan_rejected(rows)
+                mismatch = result["schedule_integrity"]["mismatches"][0]
+                self.assertEqual(mismatch["actual_repeat_type"], "float")
+
+    def test_none_is_allowed_only_at_canonical_none_positions(self):
+        for index, value in ((2, None), (0, 0)):
+            with self.subTest(index=index, value=value):
+                rows = copy.deepcopy(self.rows)
+                rows[index]["repeat"] = value
+                self.assert_plan_rejected(rows)
+
     def test_reordered_invocations_are_rejected(self):
         rows = copy.deepcopy(self.rows)
         rows[2], rows[3] = rows[3], rows[2]
@@ -186,6 +211,30 @@ class ToolSuiteTests(unittest.TestCase):
         manifest = json.loads(completed.stdout)
         self.assertFalse(manifest["gate_passed"])
         self.assertFalse(manifest["schedule_integrity"]["passed"])
+
+    def test_malformed_repeat_replay_cli_returns_nonzero(self):
+        rows = copy.deepcopy(self.rows)
+        rows[2]["repeat"] = False
+        with tempfile.TemporaryDirectory() as temporary:
+            replay = Path(temporary) / "boolean-repeat.json"
+            replay.write_text(json.dumps(rows), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "run-tools.py"),
+                    "--replay",
+                    str(replay),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        manifest = json.loads(completed.stdout)
+        self.assertFalse(manifest["gate_passed"])
+        self.assertFalse(manifest["schedule_integrity"]["passed"])
+        mismatch = manifest["schedule_integrity"]["mismatches"][0]
+        self.assertEqual(mismatch["actual_repeat_type"], "bool")
 
 
 class NeedleConstructionTests(unittest.TestCase):

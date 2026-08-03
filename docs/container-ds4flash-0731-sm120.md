@@ -1,5 +1,9 @@
 # DeepSeek-V4-Flash-0731 mapped-W2 OCI image
 
+> **Alternative historical artifact:** this immutable image validates the
+> earlier three-layer DSpark-3/393,216-token shape. It does not contain the
+> final five-layer DSpark-4/1,000,000-token native production configuration.
+
 This recipe builds the complete Pennyroyal serving image from declared source
 inputs. It does not copy a virtual environment, extension, wheel, or generated
 Python package from a live installation.

@@ -47,9 +47,13 @@ runtime_manifests:
       model_manifests:
         DeepSeek-V4-Flash: 72248d76cccb7c8b2d5f05ba8206ba9345337c8af9d3b58ac43a672a5cb3d3f5
 # Quality campaigns (bench/suites/quality.yaml vs bench/baselines/) are
-# expensive and run on their own cadence; the README quality table renders
+# expensive and run on their own cadence; generated quality reports render
 # from this release id.
 quality_release: v2026.07.30-quality
+# This publication branch has a focused single-card landing page. Generated
+# benchmark reports remain active under docs/benchmarks, but broad inherited
+# tables are intentionally omitted from README.md.
+render_readme: false
 regression_threshold_pct: 5
 
 entries:

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Render bench/results/<release>/ into (a) the generated block in README.md
-and (b) docs/benchmarks/<release>.md (the full per-release report).
+"""Render bench/results/<release>/ into docs/benchmarks/<release>.md and,
+unless matrix.yaml sets render_readme: false, generated README.md blocks.
 
   render.py                  # render current_release from matrix.yaml
   render.py --release <id>
   render.py --check          # exit 1 if README/report differ from a fresh
                              # render (CI guard: numbers never drift from data)
 
-The README block lives between the markers below; everything inside is
-machine-owned. Hand-edits get overwritten (and flagged by --check)."""
+When enabled, the README block lives between the markers below; everything
+inside is machine-owned. Hand-edits get overwritten (and flagged by --check).
+Disabling README rendering does not disable report generation or checks."""
 
 import argparse
 import os
@@ -324,9 +325,11 @@ def render_report(release, prev_release, threshold):
     return "\n".join(out)
 
 
-def splice_readme(block, qblock=None):
+def splice_readme(block, qblock=None, *, enabled=True):
     with open(README) as f:
         text = f.read()
+    if not enabled:
+        return text
     if BEGIN in text and END in text:
         head, rest = text.split(BEGIN, 1)
         _, tail = rest.split(END, 1)
@@ -360,6 +363,7 @@ def main():
     release = args.release or mx["current_release"]
     prev = mx.get("previous_release")
     qrelease = mx.get("quality_release")
+    render_readme = mx.get("render_readme", True)
     threshold = mx.get("regression_threshold_pct", 5)
 
     if not any(True for _ in common.iter_results(release)):
@@ -373,7 +377,7 @@ def main():
         qreport = render_report(qrelease, None, threshold)
         qreport_path = os.path.join(common.REPO_DIR, "docs", "benchmarks",
                                     f"{qrelease}.md")
-    new_readme = splice_readme(block, qblock)
+    new_readme = splice_readme(block, qblock, enabled=render_readme)
     report = render_report(release, prev, threshold)
     report_path = os.path.join(common.REPO_DIR, "docs", "benchmarks",
                                f"{release}.md")

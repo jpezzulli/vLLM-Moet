@@ -77,7 +77,7 @@ The two context figures are allocation/configuration evidence, not exercised
 context. The validation does not establish concurrency, soak, container,
 other-GPU, other-checkpoint, tensor-parallel, arbitrary-workload, or production
 deployment behavior. The frozen-suite methodology and remaining C5 gaps are
-preserved in the [quality report](https://github.com/jpezzulli/vLLM-Moet/blob/agent/mapped-host-w2-public/docs/mapped-w2-quality-validation.md).
+preserved in the [quality report](mapped-w2-quality-validation.md).
 
 Focused unit coverage exercises parsing and compatibility guards, exact
 allocation geometry, canonical views, duplicate prevention, UVA/topology

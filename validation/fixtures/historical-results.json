@@ -1,0 +1,24 @@
+{
+  "runtime_source_commit": "a2131dd7a944353e9323566107c72f4a17441024",
+  "suite_revision": "106ceea4bfac0fab124505c8ef671f7cf163974b",
+  "reasoning": {
+    "measured_requests": 9,
+    "historical_score": 97.07,
+    "grade_fixture": "reasoning-dspark4-grade.json",
+    "scoring_kind": "blinded qualitative review followed by mechanical fatal caps"
+  },
+  "tools": {
+    "invocations": 30,
+    "automatic_passes": 30,
+    "reviewed_passes": 30,
+    "exact_tool_selection_and_arguments": 30,
+    "external_side_effects_executed": false
+  },
+  "needle": {
+    "target_and_actual_server_rendered_input_tokens": 994987,
+    "needle": "GRID-NEEDLE-7B91E2C4A6F0D835",
+    "needle_start_zero_based_token": 154,
+    "historical_ttft_seconds": 975.550,
+    "historical_result": "exact retrieval and follow-up 37 + 58 = 95"
+  }
+}

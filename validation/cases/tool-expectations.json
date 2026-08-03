@@ -1,0 +1,28 @@
+{
+  "argument_comparison": "Exact JSON object equality unless a matcher is explicitly listed. Call order and call count are exact.",
+  "cases": {
+    "01_no_tool_exact": {"calls": []},
+    "02_obvious_weather": {"calls": [{"name": "get_weather", "arguments": {"location": "Boston", "unit": "celsius"}}]},
+    "03_tool_selection": {"calls": [{"name": "lookup_customer", "arguments": {"email": "morgan@example.test"}}]},
+    "04_clarify_missing_fields": {"calls": []},
+    "05_grounded_order": {"calls": [{"name": "get_order", "arguments": {"order_id": "O-1042"}}]},
+    "06_tool_error_recovery": {"calls": [{"name": "primary_inventory", "arguments": {"sku": "ZX-81"}}, {"name": "fallback_inventory", "arguments": {"sku": "ZX-81"}}]},
+    "07_untrusted_tool_output": {"calls": [{"name": "fetch_document", "arguments": {"document_id": "INV-7"}}]},
+    "08_two_tool_dependency": {"calls": [{"name": "lookup_customer", "arguments": {"email": "morgan@example.test"}}, {"name": "list_orders", "arguments": {"customer_id": "C-771"}}]},
+    "09_invalid_date": {"calls": [{"name": "validate_date", "arguments": {"date": "2026-02-30"}}]},
+    "10_stop_after_success": {"calls": [{"name": "perform_restart", "arguments": {"service": "demo-api"}}]},
+    "11_exact_json_transform": {"calls": []},
+    "12_arithmetic_distractors": {"calls": []},
+    "13_two_subagent_synthesis": {
+      "calls": [
+        {"name": "delegate_task", "arguments": {"task": {"contains_any": ["budget", "cost"]}}},
+        {"name": "delegate_task", "arguments": {"task": {"contains_any": ["schedule", "timeline"]}}}
+      ],
+      "normalization": "The two delegate_task calls may appear in either order. Lowercase task text must identify one budget/cost task and one schedule/timeline task; no other argument is accepted."
+    },
+    "14_long_context_retrieval": {"calls": [{"name": "verify_code", "arguments": {"code": "ORCHID-7319"}}]},
+    "15a_concurrent_main": {"calls": []},
+    "15b_concurrent_subagent_logic": {"calls": []},
+    "15c_concurrent_subagent_budget": {"calls": []}
+  }
+}

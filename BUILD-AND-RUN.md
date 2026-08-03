@@ -127,6 +127,12 @@ This lightweight check verifies the import when the local environment is
 available, `/health`, `/v1/models`, the mapped audit, and one small arithmetic
 response. It does not rerun the frozen quality or million-token tests.
 
+For the frozen reasoning and tool suites, or the explicitly opt-in
+994,987-token retrieval workload, follow the separate
+[public validation guide](validation/README.md). Those runners default to this
+same endpoint and served-model name, write new dated result manifests, and do
+not alter the serving configuration.
+
 ## Container alternative
 
 The published v4 OCI image is an immutable reproduction of the earlier

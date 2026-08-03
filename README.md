@@ -9,15 +9,15 @@ limit**.
 
 | Validated result | Outcome |
 |---|---:|
-| Frozen reasoning quality | **97.07/100** |
-| Tool/agent suite | **30/30** exact tool selections and arguments |
+| [Frozen reasoning quality](validation/README.md#frozen-reasoning-suite) | **97.07/100** |
+| [Tool/agent suite](validation/README.md#tool-and-agent-suite) | **30/30** exact tool selections and arguments |
 | Combined suite-wall throughput | **53.44 tok/s** including harness overhead |
 | Model-generation throughput | approximately **56.49 tok/s**, excluding harness overhead |
-| Long-context retrieval | **994,987 input tokens**, correct needle |
-| Million-token prefill | **971.495 s at 1,024.18 tok/s** |
-| Time to first token | **975.550 s**, approximately 16 minutes |
-| Post-prefill decode | **64.12 tok/s** |
-| Immediate follow-up | Correct: `37 + 58` returned `95` |
+| [Long-context retrieval](validation/README.md#opt-in-near-million-token-needle) | **994,987 input tokens**, correct needle |
+| [Million-token prefill](validation/README.md#opt-in-near-million-token-needle) | **971.495 s at 1,024.18 tok/s** |
+| [Time to first token](validation/README.md#opt-in-near-million-token-needle) | **975.550 s**, approximately 16 minutes |
+| [Post-prefill decode](validation/README.md#opt-in-near-million-token-needle) | **64.12 tok/s** |
+| [Immediate follow-up](validation/README.md#opt-in-near-million-token-needle) | Correct: `37 + 58` returned `95` |
 | Lowest directly sampled physical VRAM free | **119 MiB** during the long-context run |
 
 > **Attribution:** This work is built on
@@ -98,6 +98,7 @@ not advertised.
 - [BUILD-AND-RUN.md](BUILD-AND-RUN.md) — pinned native build, launch, and smoke validation
 - [HOW-IT-WORKS.md](HOW-IT-WORKS.md) — allocation, NUMA/UVA, PCIe, graphs, and memory geometry
 - [VALIDATION.md](VALIDATION.md) — quality, tools, throughput, 1M retrieval, power, and limits
+- [Public validation suites](validation/README.md) — runnable smoke, reasoning, tools, and opt-in needle tests
 - [PROVENANCE.md](PROVENANCE.md) — ownership, exact commits, model pin, and evidence roots
 
 The large OCI image remains available as an earlier, fully reproducible
@@ -126,6 +127,7 @@ container.
 - `container/` and `Containerfile.ds4flash-0731-sm120` — historical OCI v4
   material, reproduced exactly from tag `history/oci-v4-20260802`
 - `docs/` — detailed historical implementation, benchmark, and container records
+- `validation/` — frozen public cases, mock tools, graders, replay fixtures, and runners
 
 Never hand-edit `patch/vllm-moet-v0.24.0.patch`, `patch/FILES.txt`, or
 `patch/SOURCE.txt`; see [AGENTS.md](AGENTS.md).

@@ -1,6 +1,9 @@
+import copy
 import importlib.util
 import json
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,25 +42,76 @@ class ResponseExtractionTests(unittest.TestCase):
 
 
 class ReasoningSuiteTests(unittest.TestCase):
+    def setUp(self):
+        self.grade = json.loads(
+            (ROOT / "fixtures/reasoning-dspark4-grade.json").read_text()
+        )
+        self.rubric = json.loads(
+            (ROOT / "cases/reasoning-rubric.json").read_text()
+        )
+
+    def score(self, grade=None):
+        return reasoning_scorer.score_grade(
+            grade or self.grade, reasoning_cases.CASES, self.rubric
+        )
+
     def test_frozen_request_count(self):
         self.assertEqual(len(reasoning_cases.CASES), 8)
         self.assertEqual(len(reasoning_runner.measured_plan(reasoning_cases)), 9)
 
     def test_historical_grade_reproduces_published_score(self):
-        grade = json.loads(
-            (ROOT / "fixtures/reasoning-dspark4-grade.json").read_text()
-        )
-        rubric = json.loads(
-            (ROOT / "cases/reasoning-rubric.json").read_text()
-        )
-        result = reasoning_scorer.score_grade(
-            grade, reasoning_cases.CASES, rubric
-        )
+        result = self.score()
         self.assertEqual(result["final_score"], 97.07)
         self.assertLess(result["case_scores"]["C5"], 100)
 
+    def test_missing_c5_correctness_is_rejected(self):
+        grade = copy.deepcopy(self.grade)
+        del grade["cases"]["C5"]["correctness"]
+        with self.assertRaisesRegex(ValueError, r"C5.*missing=.*correctness"):
+            self.score(grade)
+
+    def test_only_c5_correctness_is_rejected(self):
+        grade = copy.deepcopy(self.grade)
+        grade["cases"]["C5"] = {"correctness": 4}
+        with self.assertRaisesRegex(ValueError, r"C5.*missing="):
+            self.score(grade)
+
+    def test_unauthorized_dimension_is_rejected(self):
+        grade = copy.deepcopy(self.grade)
+        grade["cases"]["C5"]["presentation_polish"] = 4
+        with self.assertRaisesRegex(
+            ValueError, r"C5.*unexpected=.*presentation_polish"
+        ):
+            self.score(grade)
+
+    def test_revision_quality_is_rejected_outside_c8(self):
+        grade = copy.deepcopy(self.grade)
+        grade["cases"]["C1"]["revision_quality"] = 4
+        with self.assertRaisesRegex(
+            ValueError, r"C1.*unexpected=.*revision_quality"
+        ):
+            self.score(grade)
+
+    def test_complete_c8_dimension_set_is_accepted(self):
+        expected = reasoning_scorer.expected_case_dimensions("C8", self.rubric)
+        supplied = set(self.grade["cases"]["C8"]) - {"note"}
+        self.assertEqual(supplied, expected)
+        self.assertEqual(self.score()["final_score"], 97.07)
+
 
 class ToolSuiteTests(unittest.TestCase):
+    def setUp(self):
+        self.rows = json.loads(
+            (ROOT / "fixtures/tools-dspark4-replay.json").read_text()
+        )
+
+    def assert_plan_rejected(self, rows):
+        result = tool_runner.score_rows(rows)
+        self.assertFalse(result["gate_passed"])
+        self.assertFalse(result["schedule_integrity"]["passed"])
+        self.assertTrue(result["schedule_integrity"]["mismatches"])
+        return result
+
     def test_frozen_invocation_count_and_public_definition(self):
         self.assertEqual(len(tool_runner.invocation_plan()), 30)
         definition = json.loads((ROOT / "cases/tools.json").read_text())
@@ -81,11 +135,57 @@ class ToolSuiteTests(unittest.TestCase):
         self.assertFalse(tool_runner.strict_calls_match(good))
 
     def test_safe_replay_scores_30_of_30(self):
-        rows = json.loads((ROOT / "fixtures/tools-dspark4-replay.json").read_text())
-        result = tool_runner.score_rows(rows)
+        result = tool_runner.score_rows(copy.deepcopy(self.rows))
         self.assertTrue(result["gate_passed"])
+        self.assertTrue(result["schedule_integrity"]["passed"])
         self.assertEqual(result["exact_tool_selection_and_arguments"], 30)
         self.assertFalse(result["external_side_effects_executed"])
+
+    def test_thirty_copies_of_one_passing_row_are_rejected(self):
+        rows = [copy.deepcopy(self.rows[0]) for _ in range(30)]
+        result = self.assert_plan_rejected(rows)
+        self.assertTrue(result["schedule_integrity"]["missing_identities"])
+        self.assertTrue(result["schedule_integrity"]["unexpected_identities"])
+
+    def test_replacing_required_row_with_duplicate_is_rejected(self):
+        rows = copy.deepcopy(self.rows)
+        rows[5] = copy.deepcopy(rows[0])
+        self.assert_plan_rejected(rows)
+
+    def test_omitted_invocation_is_rejected(self):
+        self.assert_plan_rejected(copy.deepcopy(self.rows[:-1]))
+
+    def test_extra_invocation_is_rejected(self):
+        rows = copy.deepcopy(self.rows)
+        rows.append(copy.deepcopy(rows[-1]))
+        self.assert_plan_rejected(rows)
+
+    def test_wrong_phase_or_repeat_is_rejected(self):
+        for field, value in (("phase", "smoke"), ("repeat", 99)):
+            with self.subTest(field=field):
+                rows = copy.deepcopy(self.rows)
+                rows[4][field] = value
+                self.assert_plan_rejected(rows)
+
+    def test_reordered_invocations_are_rejected(self):
+        rows = copy.deepcopy(self.rows)
+        rows[2], rows[3] = rows[3], rows[2]
+        self.assert_plan_rejected(rows)
+
+    def test_malformed_replay_cli_returns_nonzero(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            replay = Path(temporary) / "incomplete.json"
+            replay.write_text(json.dumps(self.rows[:-1]), encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "run-tools.py"), "--replay", str(replay)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        manifest = json.loads(completed.stdout)
+        self.assertFalse(manifest["gate_passed"])
+        self.assertFalse(manifest["schedule_integrity"]["passed"])
 
 
 class NeedleConstructionTests(unittest.TestCase):

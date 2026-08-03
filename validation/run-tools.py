@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 
@@ -659,10 +660,83 @@ def strict_calls_match(result):
     return sorted(categories) == ["budget", "schedule"]
 
 
+def invocation_identity(row):
+    return {
+        "case_id": row.get("case_id"),
+        "phase": row.get("phase"),
+        "repeat": row.get("repeat"),
+    }
+
+
+def identity_tuple(identity):
+    return (
+        identity.get("case_id"),
+        identity.get("phase"),
+        identity.get("repeat"),
+    )
+
+
+def identity_dict(identity):
+    case_id, phase, repeat = identity
+    return {"case_id": case_id, "phase": phase, "repeat": repeat}
+
+
+def validate_invocation_plan(rows, expected_plan=None):
+    expected = invocation_plan() if expected_plan is None else expected_plan
+    actual = [invocation_identity(row) for row in rows]
+    expected_counts = Counter(identity_tuple(item) for item in expected)
+    actual_counts = Counter(identity_tuple(item) for item in actual)
+    missing = expected_counts - actual_counts
+    unexpected = actual_counts - expected_counts
+    mismatches = []
+    for index in range(max(len(expected), len(actual))):
+        expected_item = expected[index] if index < len(expected) else None
+        actual_item = actual[index] if index < len(actual) else None
+        if expected_item != actual_item:
+            mismatches.append({
+                "position": index + 1,
+                "expected": expected_item,
+                "actual": actual_item,
+            })
+    return {
+        "passed": not mismatches,
+        "expected_count": len(expected),
+        "actual_count": len(actual),
+        "mismatches": mismatches,
+        "missing_identities": [
+            {**identity_dict(identity), "count": count}
+            for identity, count in sorted(
+                missing.items(), key=lambda item: str(item[0])
+            )
+        ],
+        "unexpected_identities": [
+            {**identity_dict(identity), "count": count}
+            for identity, count in sorted(
+                unexpected.items(), key=lambda item: str(item[0])
+            )
+        ],
+    }
+
+
 def score_rows(rows):
+    plan_validation = validate_invocation_plan(rows)
     graded = []
     for row in rows:
-        if row["case_id"].startswith("15"):
+        case_id = row.get("case_id")
+        if case_id not in EXPECTATIONS:
+            graded.append(
+                {
+                    "case_id": case_id,
+                    "repeat": row.get("repeat"),
+                    "phase": row.get("phase"),
+                    "automatic_pass": False,
+                    "tool_selection_and_arguments_exact": False,
+                    "tool_arguments_parseable": False,
+                    "error": row.get("error") or "unexpected case_id",
+                }
+            )
+            continue
+        if case_id.startswith("15"):
             row = evaluate_concurrent(row)
         else:
             row = evaluate(row)
@@ -679,7 +753,8 @@ def score_rows(rows):
     count = len(graded)
     manifest = {
         "invocation_count": count,
-        "expected_invocation_count": 30,
+        "expected_invocation_count": plan_validation["expected_count"],
+        "schedule_integrity": plan_validation,
         "automatic_passes": sum(item["automatic_pass"] for item in graded),
         "exact_tool_selection_and_arguments": sum(
             item["tool_selection_and_arguments_exact"] for item in graded
@@ -692,10 +767,12 @@ def score_rows(rows):
         "invocations": graded,
     }
     manifest["gate_passed"] = (
-        count == 30
-        and manifest["automatic_passes"] == 30
-        and manifest["exact_tool_selection_and_arguments"] == 30
-        and manifest["parseable_tool_arguments"] == 30
+        plan_validation["passed"]
+        and manifest["automatic_passes"] == plan_validation["expected_count"]
+        and manifest["exact_tool_selection_and_arguments"]
+        == plan_validation["expected_count"]
+        and manifest["parseable_tool_arguments"]
+        == plan_validation["expected_count"]
         and manifest["errors"] == 0
     )
     return manifest

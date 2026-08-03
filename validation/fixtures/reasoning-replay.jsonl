@@ -1,0 +1,9 @@
+{"kind":"measured","request_id":"c1-r1","case_id":"C1","turn":1,"reasoning_content":"fixture reasoning","content":"fixture answer","error":null}
+{"kind":"measured","request_id":"c2-r1","case_id":"C2","turn":1,"reasoning_content":"fixture reasoning","content":"fixture answer","error":null}
+{"kind":"measured","request_id":"c3-r1","case_id":"C3","turn":1,"reasoning_content":"fixture reasoning","content":"fixture answer","error":null}
+{"kind":"measured","request_id":"c4-r1","case_id":"C4","turn":1,"reasoning_content":"fixture reasoning","content":"fixture answer","error":null}
+{"kind":"measured","request_id":"c5-r1","case_id":"C5","turn":1,"reasoning_content":"fixture reasoning","content":"fixture answer","error":null}
+{"kind":"measured","request_id":"c6-r1","case_id":"C6","turn":1,"reasoning_content":"fixture reasoning","content":"fixture answer","error":null}
+{"kind":"measured","request_id":"c7-r1","case_id":"C7","turn":1,"reasoning_content":"fixture reasoning","content":"fixture answer","error":null}
+{"kind":"measured","request_id":"c8-r1","case_id":"C8","turn":1,"reasoning_content":"fixture reasoning","content":"fixture first answer","error":null}
+{"kind":"measured","request_id":"c8-r1-correction","case_id":"C8","turn":2,"reasoning_content":"fixture corrected reasoning","content":"fixture corrected answer","error":null}

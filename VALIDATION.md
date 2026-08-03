@@ -4,6 +4,24 @@ All results below are from one RTX PRO 6000 Blackwell Workstation Edition
 using DeepSeek-V4-Flash-0731 and runtime commit
 `a2131dd7a944353e9323566107c72f4a17441024`.
 
+## Runnable public validation
+
+The exact public harnesses are documented in
+[validation/README.md](validation/README.md):
+
+1. lightweight API and mapped-W2 smoke validation;
+2. the frozen nine-request reasoning suite and blinded rubric;
+3. the exact 30-invocation tool/agent suite with local mock tools;
+4. the explicitly acknowledged 994,987-token needle test.
+
+The scores below are historical validated results. A rerun creates a new
+dated result and does not replace this evidence. Reasoning quality includes
+blinded reviewer judgment; tool scoring is automatic and compares emitted
+calls with local schemas and expected arguments without performing external
+side effects. The near-million-token test is opt-in and historically required
+about 16 minutes to reach its first token. Exact 1,048,576-token support was
+not demonstrated.
+
 ## DSpark-4 quality and tool qualification
 
 The final performance qualification used mapped target W2 layers 38–42,
@@ -15,8 +33,8 @@ was speculative depth 4.
 
 | Suite | Quality gate | Server generation | Suite-wall effective |
 |---|---:|---:|---:|
-| Frozen reasoning, 9 requests | **97.07/100** | **56.50 tok/s** | 55.89 tok/s |
-| Tool/agent, 30 invocations | **30/30** | **56.44 tok/s** | 40.36 tok/s |
+| [Frozen reasoning, 9 requests](validation/README.md#frozen-reasoning-suite) | **97.07/100** | **56.50 tok/s** | 55.89 tok/s |
+| [Tool/agent, 30 invocations](validation/README.md#tool-and-agent-suite) | **30/30** | **56.44 tok/s** | 40.36 tok/s |
 | Combined workload-weighted | all gates passed | **56.49 tok/s** | — |
 
 The model-generation value excludes harness and grading overhead. It must not

@@ -1,0 +1,26 @@
+{
+  "dimension_weights": {
+    "correctness": 24,
+    "evidence_discipline": 10,
+    "contradiction_detection": 10,
+    "constraint_preservation": 10,
+    "technical_reasoning": 14,
+    "unsupported_assumptions": 8,
+    "confidence_calibration": 6,
+    "revision_quality": 8,
+    "loop_behavior": 6,
+    "final_answer_usability": 4
+  },
+  "scale": "Each applicable dimension is scored 0-4.",
+  "aggregation": "Case weights apply within dimensions. C8 alone supplies revision_quality. One run per case in the staged screen.",
+  "fatal_caps": {
+    "case_specific_fatal": 35,
+    "confirmed_reasoning_loop": 20,
+    "repetitive_32768_exhaustion_without_usable_answer": 10
+  },
+  "qualitative_blinding": {
+    "include": ["case text", "opaque candidate/run ID", "complete reasoning text", "complete visible answer", "complete C8 transcript"],
+    "exclude": ["runtime identity", "execution order", "token counts", "timing", "throughput", "finish reason", "loop flags", "termination reason", "server/API metadata"],
+    "sequence": "Lock qualitative scores before revealing operational metadata or runtime mapping. Apply mechanical fatal caps afterward."
+  }
+}

@@ -1,0 +1,413 @@
+[
+  {
+    "case_id": "01_no_tool_exact",
+    "repeat": null,
+    "phase": "smoke",
+    "calls": [],
+    "final": "Paris",
+    "error": null
+  },
+  {
+    "case_id": "01_no_tool_exact",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [],
+    "final": "Paris",
+    "error": null
+  },
+  {
+    "case_id": "02_obvious_weather",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "get_weather",
+        "arguments": {
+          "location": "Boston",
+          "unit": "celsius"
+        }
+      }
+    ],
+    "final": "The current weather in Boston is **17°C** with **rainy** conditions.",
+    "error": null
+  },
+  {
+    "case_id": "02_obvious_weather",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "get_weather",
+        "arguments": {
+          "location": "Boston",
+          "unit": "celsius"
+        }
+      }
+    ],
+    "final": "The weather in Boston is currently **17°C** with **rainy** conditions.",
+    "error": null
+  },
+  {
+    "case_id": "03_tool_selection",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "lookup_customer",
+        "arguments": {
+          "email": "morgan@example.test"
+        }
+      }
+    ],
+    "final": "The exact customer ID for morgan@example.test is **C-771** (Morgan Hale).",
+    "error": null
+  },
+  {
+    "case_id": "03_tool_selection",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "lookup_customer",
+        "arguments": {
+          "email": "morgan@example.test"
+        }
+      }
+    ],
+    "final": "The exact customer ID for **morgan@example.test** is **C-771** (Morgan Hale).",
+    "error": null
+  },
+  {
+    "case_id": "04_clarify_missing_fields",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [],
+    "final": "I'd be happy to schedule a delivery for you. To do that, I need two pieces of information:\n\n1. **Delivery address** — where should the delivery go?\n2. **Delivery date** — what date should the delivery arrive? (Please provide it in ISO format, e.g., `2025-06-30`)\n\nOnce I have those, I can schedule it right away.",
+    "error": null
+  },
+  {
+    "case_id": "04_clarify_missing_fields",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [],
+    "final": "I'd be happy to schedule a delivery for you. To do that, I need a couple of details:\n\n1. **Delivery address** — where should the delivery go?\n2. **Delivery date** — what date (in ISO format, e.g., `2026-07-15`) should it be delivered?\n\nPlease provide both, and I'll get it scheduled right away.",
+    "error": null
+  },
+  {
+    "case_id": "05_grounded_order",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "get_order",
+        "arguments": {
+          "order_id": "O-1042"
+        }
+      }
+    ],
+    "final": "Order O-1042 is currently **delayed**. Its estimated arrival (ETA) is **2026-08-03**, and the carrier is **Northstar**.",
+    "error": null
+  },
+  {
+    "case_id": "05_grounded_order",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "get_order",
+        "arguments": {
+          "order_id": "O-1042"
+        }
+      }
+    ],
+    "final": "Here is the current status for order O-1042:\n\n- **Status:** Delayed  \n- **ETA:** 2026-08-03  \n- **Carrier:** Northstar",
+    "error": null
+  },
+  {
+    "case_id": "06_tool_error_recovery",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "primary_inventory",
+        "arguments": {
+          "sku": "ZX-81"
+        }
+      },
+      {
+        "name": "fallback_inventory",
+        "arguments": {
+          "sku": "ZX-81"
+        }
+      }
+    ],
+    "final": "SKU ZX-81 has **7 units** available (retrieved from the fallback inventory service, as the primary service was unavailable).",
+    "error": null
+  },
+  {
+    "case_id": "06_tool_error_recovery",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "primary_inventory",
+        "arguments": {
+          "sku": "ZX-81"
+        }
+      },
+      {
+        "name": "fallback_inventory",
+        "arguments": {
+          "sku": "ZX-81"
+        }
+      }
+    ],
+    "final": "SKU ZX-81 has **7 units** available (retrieved from the fallback inventory service, as the primary service was unavailable).",
+    "error": null
+  },
+  {
+    "case_id": "07_untrusted_tool_output",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "fetch_document",
+        "arguments": {
+          "document_id": "INV-7"
+        }
+      }
+    ],
+    "final": "The invoice total is $284.19.",
+    "error": null
+  },
+  {
+    "case_id": "07_untrusted_tool_output",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "fetch_document",
+        "arguments": {
+          "document_id": "INV-7"
+        }
+      }
+    ],
+    "final": "The invoice total is $284.19.",
+    "error": null
+  },
+  {
+    "case_id": "08_two_tool_dependency",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "lookup_customer",
+        "arguments": {
+          "email": "morgan@example.test"
+        }
+      },
+      {
+        "name": "list_orders",
+        "arguments": {
+          "customer_id": "C-771"
+        }
+      }
+    ],
+    "final": "Customer: **Morgan Hale** (customer ID C-771)\n\nOpen order: **O-9** — total: **$42.50**",
+    "error": null
+  },
+  {
+    "case_id": "08_two_tool_dependency",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "lookup_customer",
+        "arguments": {
+          "email": "morgan@example.test"
+        }
+      },
+      {
+        "name": "list_orders",
+        "arguments": {
+          "customer_id": "C-771"
+        }
+      }
+    ],
+    "final": "The customer for morgan@example.test is **Morgan Hale** (customer ID: C-771). Their open order is **O-9** with a total of **$42.50**.",
+    "error": null
+  },
+  {
+    "case_id": "09_invalid_date",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "validate_date",
+        "arguments": {
+          "date": "2026-02-30"
+        }
+      }
+    ],
+    "final": "The date **2026-02-30** is invalid — February 30 does not exist in the Gregorian calendar.\n\nValidation failed (`day_out_of_range`), so I will **not** book or schedule anything for that date.",
+    "error": null
+  },
+  {
+    "case_id": "09_invalid_date",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "validate_date",
+        "arguments": {
+          "date": "2026-02-30"
+        }
+      }
+    ],
+    "final": "The date 2026-02-30 is invalid (day out of range for February). I will not book anything and will not claim it is valid.\n\nI won't schedule a delivery since the date validation failed.",
+    "error": null
+  },
+  {
+    "case_id": "10_stop_after_success",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "perform_restart",
+        "arguments": {
+          "service": "demo-api"
+        }
+      }
+    ],
+    "final": "The sandbox service `demo-api` was restarted exactly once. The operation completed successfully with status `\"restarted\"` and restart count `1`. No further restart was performed.",
+    "error": null
+  },
+  {
+    "case_id": "10_stop_after_success",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "perform_restart",
+        "arguments": {
+          "service": "demo-api"
+        }
+      }
+    ],
+    "final": "The sandbox service `demo-api` was restarted exactly once. The restart was successful, confirmed by the response status `\"restarted\"` with a restart count of `1`. No further restart was performed.",
+    "error": null
+  },
+  {
+    "case_id": "11_exact_json_transform",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [],
+    "final": "{\"a\":3,\"b\":7,\"c\":0}",
+    "error": null
+  },
+  {
+    "case_id": "11_exact_json_transform",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [],
+    "final": "{\"a\":3,\"b\":7,\"c\":0}",
+    "error": null
+  },
+  {
+    "case_id": "12_arithmetic_distractors",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [],
+    "final": "102",
+    "error": null
+  },
+  {
+    "case_id": "12_arithmetic_distractors",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [],
+    "final": "102 valid tickets.",
+    "error": null
+  },
+  {
+    "case_id": "13_two_subagent_synthesis",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "delegate_task",
+        "arguments": {
+          "task": "Perform a bounded budget analysis for Project Pine. Review all available budget-related data (costs, funding, variances, financial risks). Report only concrete findings you can ground in the actual data; do not speculate or invent figures."
+        }
+      },
+      {
+        "name": "delegate_task",
+        "arguments": {
+          "task": "Perform a bounded schedule analysis for Project Pine. Review all available schedule-related data (timeline, milestones, deadlines, slippage, schedule risks). Report only concrete findings you can ground in the actual data; do not speculate or invent dates."
+        }
+      }
+    ],
+    "final": "Based on the two delegated analyses, here is the synthesized assessment of Project Pine:\n\n**Budget Analysis Finding**\n- Project Pine is **$1.2M over budget**.\n\n**Schedule Analysis Finding**\n- Project Pine is **6 weeks late**.\n\n**Synthesized Assessment**\n- Project Pine is currently over budget by **$1.2M** and behind schedule by **6 weeks**.\n- The project is facing **both cost and schedule overruns** simultaneously, indicating a dual risk profile: financial performance is deteriorating relative to budget, and delivery timeline is slipping relative to plan.\n- Given both dimensions are underperforming, Project Pine warrants close monitoring and likely corrective action across cost control and schedule recovery efforts.\n\nNo findings beyond the two grounded results were invented; the synthesis reflects only the returned data from the budget and schedule analyses.",
+    "error": null
+  },
+  {
+    "case_id": "13_two_subagent_synthesis",
+    "repeat": 1,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "delegate_task",
+        "arguments": {
+          "task": "Perform a bounded budget analysis for Project Pine. Use only available project data and documents you can access. Identify total budget, actual expenditures, variances, cost risks, and any budget-related issues. Report concrete numbers and observations. If data is unavailable, state that clearly. Do not invent or fabricate any findings."
+        }
+      },
+      {
+        "name": "delegate_task",
+        "arguments": {
+          "task": "Perform a bounded schedule analysis for Project Pine. Use only available project data and documents you can access. Identify planned milestones, actual progress, schedule variances, critical path concerns, slippage, and any schedule-related risks. Report concrete dates and observations. If data is unavailable, state that clearly. Do not invent or fabricate any findings."
+        }
+      }
+    ],
+    "final": "## Project Pine Assessment (Synthesized)\n\nThe two delegated analyses returned the following findings:\n\n- **Budget analysis:** Project Pine is **$1.2M over budget**.\n- **Schedule analysis:** Project Pine is **6 weeks late**.\n\n### Combined Assessment\nProject Pine is experiencing **concurrent cost and schedule overruns**:\n- It is running **$1.2M over its approved budget**, indicating significant cost pressure.\n- It is **6 weeks behind schedule**, indicating timeline slippage.\n\nTaken together, the project is behind on both cost and schedule dimensions—a classic indicator of overall project performance risk. Further investigation would be warranted into root causes (e.g., scope changes, resource constraints, or execution inefficiencies), but no additional findings are available beyond the two reported figures.",
+    "error": null
+  },
+  {
+    "case_id": "14_long_context_retrieval",
+    "repeat": 0,
+    "phase": "suite",
+    "calls": [
+      {
+        "name": "verify_code",
+        "arguments": {
+          "code": "ORCHID-7319"
+        }
+      }
+    ],
+    "final": "The archive contained the authorization code `ORCHID-7319` in Record 0885. I called `verify_code` with that exact code, and it returned `verified: true`.",
+    "error": null
+  },
+  {
+    "case_id": "15a_concurrent_main",
+    "repeat": null,
+    "phase": "concurrent",
+    "calls": [],
+    "final": "Given 40 nodes, a 4-minute rollback, and a 1-minute downtime budget, the safest method is **blue-green deployment**.\n\n**Why:**  \n- **All-at-once** risks full outage if the new version fails—downtime could exceed 1 minute, and rollback takes 4 minutes.  \n- **Rolling** reduces downtime but still exposes nodes gradually; if something breaks, rollback across 40 nodes can take longer than 1 minute.  \n- **Blue-green** keeps the old environment (blue) fully available while the new one (green) is validated, then switches traffic instantly—downtime is near zero, and rollback is a simple traffic switch back.\n\n**Three concise steps:**\n\n1. **Deploy new version to the green environment** and run smoke/integration tests while blue serves all traffic.\n2. **Switch the load balancer/router to green** atomically—this transition takes seconds, keeping downtime well under 1 minute.\n3. **Monitor green for a short stabilization period; if anything fails, switch traffic back to blue** immediately (rollback is a traffic flip, not a 4-minute node redeploy). Keep blue until green is confirmed stable.",
+    "error": null
+  },
+  {
+    "case_id": "15b_concurrent_subagent_logic",
+    "repeat": null,
+    "phase": "concurrent",
+    "calls": [],
+    "final": "K is queued and not complete — because all amber jobs are queued, so K is queued, and no queued job is complete.",
+    "error": null
+  },
+  {
+    "case_id": "15c_concurrent_subagent_budget",
+    "repeat": null,
+    "phase": "concurrent",
+    "calls": [],
+    "final": "Four servers: 4 × $2,400 = $9,600  \nSetup: $2,900  \nTotal combined cost: $9,600 + $2,900 = **$12,500**",
+    "error": null
+  }
+]

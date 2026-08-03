@@ -10,6 +10,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+CASE_METADATA_FIELDS = frozenset({"note"})
+REVISION_CASE_ID = "C8"
+REVISION_DIMENSION = "revision_quality"
 
 
 def load_python(path: Path):
@@ -18,6 +21,18 @@ def load_python(path: Path):
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def expected_case_dimensions(case_id: str, rubric: dict) -> set[str]:
+    """Derive the complete dimension schema from the frozen rubric."""
+    dimensions = set(rubric["dimension_weights"])
+    if REVISION_DIMENSION not in dimensions:
+        raise ValueError(
+            f"rubric is missing required dimension {REVISION_DIMENSION}"
+        )
+    if case_id == REVISION_CASE_ID:
+        return dimensions
+    return dimensions - {REVISION_DIMENSION}
 
 
 def score_grade(grade: dict, cases: list[dict], rubric: dict) -> dict:
@@ -30,15 +45,26 @@ def score_grade(grade: dict, cases: list[dict], rubric: dict) -> dict:
     dimension_averages = {}
     case_scores = {}
     for case_id, case_grade in scores.items():
-        applicable = {
-            name: value
-            for name, value in case_grade.items()
-            if name in dimension_weights
-        }
-        if not applicable:
-            raise ValueError(f"{case_id} has no scored dimensions")
+        expected = expected_case_dimensions(case_id, rubric)
+        supplied = set(case_grade) - CASE_METADATA_FIELDS
+        missing = sorted(expected - supplied)
+        unexpected = sorted(supplied - expected)
+        if missing or unexpected:
+            details = []
+            if missing:
+                details.append(f"missing={missing}")
+            if unexpected:
+                details.append(f"unexpected={unexpected}")
+            raise ValueError(
+                f"{case_id} dimension schema mismatch: {'; '.join(details)}"
+            )
+        applicable = {name: case_grade[name] for name in expected}
         for name, value in applicable.items():
-            if not isinstance(value, (int, float)) or not 0 <= value <= 4:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not 0 <= value <= 4
+            ):
                 raise ValueError(f"{case_id}.{name} must be between 0 and 4")
         total_weight = sum(dimension_weights[name] for name in applicable)
         case_scores[case_id] = 100 * sum(

@@ -4,6 +4,11 @@
 > earlier three-layer DSpark-3/393,216-token shape. It does not contain the
 > final five-layer DSpark-4/1,000,000-token native production configuration.
 
+The exact historical build inputs are preserved by annotated tag
+`history/oci-v4-20260802` at publication commit `0544e69e63dce5a9cf597797df3db140391ba832`.
+Check out that tag before rebuilding: the current `rtx-pro6000` branch carries
+the newer a2131 generated patch, while this image was built from 95ef4a88.
+
 This recipe builds the complete Pennyroyal serving image from declared source
 inputs. It does not copy a virtual environment, extension, wheel, or generated
 Python package from a live installation.
@@ -74,6 +79,7 @@ for the complete input map.
 From the repository root:
 
 ```bash
+git checkout history/oci-v4-20260802
 podman build --format oci --pull=never --layers \
   -f Containerfile.ds4flash-0731-sm120 \
   -t localhost/jpezzulli/vllm-moet:ds4flash-0731-sm120-v4-candidate .

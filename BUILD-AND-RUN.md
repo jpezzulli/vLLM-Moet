@@ -3,7 +3,7 @@
 This is the preferred reproduction path for the validated single-card
 DeepSeek-V4-Flash-0731 configuration. It builds the directly pinned runtime
 source used by the final hardware tests; it does not apply or regenerate the
-older publication patch.
+repository's generated publication patch.
 
 ## Supported target
 
@@ -13,8 +13,8 @@ older publication patch.
 - CUDA mapped-host memory and UVA
 - at least 192 GiB host RAM and a memlock limit sufficient for 9,059,696,640
   mapped W2 bytes plus normal runtime allocations
-- CUDA toolkit 13.3, GCC/G++ 15, `uv`, Git, `curl`, and the Hugging Face
-  `hf` CLI when downloading the checkpoint
+- CUDA toolkit 13.3, GCC/G++ 15, CMake 3.26.1 or newer, Ninja, `uv`, Git,
+  `curl`, and the Hugging Face `hf` CLI when downloading the checkpoint
 
 The validated software pins are listed in [PROVENANCE.md](PROVENANCE.md).
 The important runtime source is
@@ -32,7 +32,7 @@ from the pinned vLLM source tree.
 ```bash
 git clone https://github.com/jpezzulli/vLLM-Moet.git
 cd vLLM-Moet
-git checkout main
+git checkout rtx-pro6000
 
 hf download deepseek-ai/DeepSeek-V4-Flash-0731 \
   --revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062 \
@@ -130,7 +130,9 @@ response. It does not rerun the frozen quality or million-token tests.
 ## Container alternative
 
 The published v4 OCI image is an immutable reproduction of the earlier
-three-mapped-layer DSpark-3/393,216-token candidate. It is useful for checking
-container packaging and topology handling, but it is not the final DSpark-4
-one-million-token configuration. See
+three-mapped-layer DSpark-3/393,216-token candidate. It used runtime
+`95ef4a88c63c9ed88f2384977e05d788897af6c3` and was sealed by publication
+commit `0544e69e63dce5a9cf597797df3db140391ba832`. It is useful for checking
+container packaging and topology handling, but it is not the final a2131
+DSpark-4 one-million-token configuration. See
 [the container record](docs/container-ds4flash-0731-sm120.md).

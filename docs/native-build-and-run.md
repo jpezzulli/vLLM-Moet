@@ -12,7 +12,7 @@ vLLM-MoET patch. It does not build or validate a container.
 
 ```bash
 git clone https://github.com/jpezzulli/vLLM-Moet.git /opt/vllm-moet-clean
-git -C /opt/vllm-moet-clean checkout agent/mapped-host-w2-public
+git -C /opt/vllm-moet-clean checkout history/oci-v4-20260802
 
 git clone --branch v0.24.0 https://github.com/vllm-project/vllm.git \
   /opt/vllm-v0.24.0-clean

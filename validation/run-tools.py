@@ -681,6 +681,23 @@ def identity_dict(identity):
     return {"case_id": case_id, "phase": phase, "repeat": repeat}
 
 
+def identities_match(actual, expected):
+    if (
+        actual["case_id"] != expected["case_id"]
+        or actual["phase"] != expected["phase"]
+    ):
+        return False
+    expected_repeat = expected["repeat"]
+    actual_repeat = actual["repeat"]
+    if expected_repeat is None:
+        return actual_repeat is None
+    return (
+        type(expected_repeat) is int
+        and type(actual_repeat) is int
+        and actual_repeat == expected_repeat
+    )
+
+
 def validate_invocation_plan(rows, expected_plan=None):
     expected = invocation_plan() if expected_plan is None else expected_plan
     actual = [invocation_identity(row) for row in rows]
@@ -692,12 +709,24 @@ def validate_invocation_plan(rows, expected_plan=None):
     for index in range(max(len(expected), len(actual))):
         expected_item = expected[index] if index < len(expected) else None
         actual_item = actual[index] if index < len(actual) else None
-        if expected_item != actual_item:
-            mismatches.append({
+        if (
+            expected_item is None
+            or actual_item is None
+            or not identities_match(actual_item, expected_item)
+        ):
+            mismatch = {
                 "position": index + 1,
                 "expected": expected_item,
                 "actual": actual_item,
-            })
+            }
+            if expected_item is not None and actual_item is not None:
+                mismatch["expected_repeat_type"] = type(
+                    expected_item["repeat"]
+                ).__name__
+                mismatch["actual_repeat_type"] = type(
+                    actual_item["repeat"]
+                ).__name__
+            mismatches.append(mismatch)
     return {
         "passed": not mismatches,
         "expected_count": len(expected),

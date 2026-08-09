@@ -2,8 +2,28 @@
 
 All results below are from one RTX PRO 6000 Blackwell Workstation Edition
 using DeepSeek-V4-Flash-0731. Historical qualification used the earlier
-mapped-host runtime; the focused August 9 maintenance validation used runtime
-`752637ef1a78787e84bb33efe835b4c0b06e4918` without rerunning those suites.
+mapped-host runtime. The latest focused parser maintenance validation used
+runtime `5f0b74ba5dec80bb914023ad38fbb04ec81c9343` without rerunning those suites.
+
+## Parser-engine maintenance validation
+
+The merged DeepSeek parser-engine lineage and recursive nested-DSML decoder
+passed the complete local parser-engine suite (**2,900 passed**) and the
+focused DeepSeek/structured-output group (**103 passed, 1 expected xfail**).
+The latter used authenticated Hugging Face tokenizer fixtures.
+
+Penny then started normally with the unchanged DSpark-4/1M recipe. The runtime
+reported mapped layers 38–42 on NUMA node 0, GPU-resident draft layers 43–45,
+512 correction slots (6 GiB), FP8 MLA KV, and 1,058,256 KV tokens. Five
+non-strict and five request-strict synthetic deferred-bridge runs produced no
+DSML or `R0TURN` leakage, invalid JSON, or parser-finalization exception.
+
+The non-strict bridge supplied complete nested arguments in two runs only after
+one or more retries; the request-strict bridge always preserved its required
+outer members but supplied the complete open nested object in one of five
+runs. This is a schema boundary, not claimed as a 31/31 qualification result:
+an open object cannot constrain fields from a deferred schema absent from the
+request. The historical full quality suites were not rerun.
 
 ## Direct-cache startup maintenance validation
 

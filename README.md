@@ -92,30 +92,29 @@ vLLM repairs:
 - packed DeepSeek-V4 KV-block zeroing from vLLM commit `d6af803` / PR #50276;
 - structured output with speculative decoding from merged PRs #44297 and
   #44993;
-- server-side strict structural tool calling adapted from PR #49885.
+- the merged parser-engine migration from PR #45877 and special-token repair
+  from PR #48748.
 
-The DS4 parser line follows upstream behavior exactly: `string="true|false"`
-and guarded wrapper handling from PR #41801 at merge
+The DS4 parser line preserves `string="true|false"` and guarded wrapper
+handling from PR #41801 at merge
 `95582868efd4db0b120e3640bbc61dcfce20d59f`; incremental DSML argument
 streaming from PR #42879 at merge
-`b372ad3e9018f032478619adbc7f7fdcc9318212`; and declared-tool-only orphan
-invoke recovery adapted from open PR #49117 at inspected head
-`7ef0ae2480799e95fb7cb801a8105c1db2585164`. Nested object and array values
-are JSON text in `string="false"` parameters. The prior local recursive
-nested-DSML interpretation was removed because it had no upstream lineage.
+`b372ad3e9018f032478619adbc7f7fdcc9318212`; the shared parser-engine migration
+from PR #45877 at merge `fb5291b35`; and declared-tool-only orphan recovery
+adapted from open PR #49117. MoET additionally decodes recursive DSML parameter
+trees emitted for nested open objects, rather than flattening nested members
+into the outer call.
 
-MoET-specific integration enables the strict override without mutating
-requests and adds the direct planes-plus-delta startup path described above.
-The final compatibility guard limits that direct path to the native MXFP4
-builder used by this recipe. The production launcher sets
-`VLLM_ENFORCE_STRICT_TOOL_CALLING=true`; non-strict auto-tool schemas therefore
-receive structural grammar containment while keeping open nested argument
-objects valid.
+The launcher does not force strict tool calling. Structural grammar remains
+request controlled through each function's `strict` field. A strict outer
+bridge can require its declared `name` and `arguments` members, but an open
+nested `arguments` object cannot constrain fields from a deferred schema that
+was never included in the request. Clients must validate or materialize that
+schema; the runtime does not invent missing nested arguments.
 
-An observed xgrammar stop-boundary warning under strict structured output plus
-DSpark remains a qualification limitation. The focused smoke request completed
-with a valid tool call and no parser exception, but the historical full quality
-suites were not rerun for this maintenance change.
+Focused maintenance validation completed without leaked DSML, `R0TURN`, JSON
+errors, or parser-finalization exceptions. The historical full quality suites
+were not rerun for this parser maintenance change.
 
 ## Why it matters
 

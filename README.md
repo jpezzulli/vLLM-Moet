@@ -94,11 +94,20 @@ vLLM repairs:
   #44993;
 - server-side strict structural tool calling adapted from PR #49885.
 
-MoET-specific integration in this fork preserves nested DeepSeek DSML objects,
-enables the strict override without mutating requests, and adds the direct
-planes-plus-delta startup path described above. The final compatibility guard
-limits that direct path to the native MXFP4 builder used by this recipe. The
-production launcher sets
+The DS4 parser line follows upstream behavior exactly: `string="true|false"`
+and guarded wrapper handling from PR #41801 at merge
+`95582868efd4db0b120e3640bbc61dcfce20d59f`; incremental DSML argument
+streaming from PR #42879 at merge
+`b372ad3e9018f032478619adbc7f7fdcc9318212`; and declared-tool-only orphan
+invoke recovery adapted from open PR #49117 at inspected head
+`7ef0ae2480799e95fb7cb801a8105c1db2585164`. Nested object and array values
+are JSON text in `string="false"` parameters. The prior local recursive
+nested-DSML interpretation was removed because it had no upstream lineage.
+
+MoET-specific integration enables the strict override without mutating
+requests and adds the direct planes-plus-delta startup path described above.
+The final compatibility guard limits that direct path to the native MXFP4
+builder used by this recipe. The production launcher sets
 `VLLM_ENFORCE_STRICT_TOOL_CALLING=true`; non-strict auto-tool schemas therefore
 receive structural grammar containment while keeping open nested argument
 objects valid.

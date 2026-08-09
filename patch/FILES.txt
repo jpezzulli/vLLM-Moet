@@ -4,6 +4,7 @@
 # patch but not in the vllm fork branch the patch is generated from —
 # merge it into the branch first; do not ship the regeneration.
 csrc/nvfp4_ds_mla/concat_and_cache_nvfp4_ds_mla.cu
+docs/features/tool_calling.md
 tests/model_executor/layers/test_moe_w2_mapped_host.py
 tests/model_executor/layers/test_moe_w2_persistence.py
 tests/tool_parsers/test_deepseekv4_tool_parser.py
@@ -52,7 +53,9 @@ vllm/tokenizers/deepseek_v4.py
 vllm/tokenizers/deepseek_v4_encoding.py
 vllm/tool_parsers/abstract_tool_parser.py
 vllm/tool_parsers/deepseekv32_tool_parser.py
+vllm/tool_parsers/deepseekv4_tool_parser.py
 vllm/tool_parsers/structural_tag_registry.py
+vllm/tool_parsers/utils.py
 vllm/transformers_utils/configs/speculators/algos.py
 vllm/utils/flashinfer.py
 vllm/v1/attention/backends/flashinfer.py

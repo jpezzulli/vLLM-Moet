@@ -175,6 +175,43 @@ index 000000000..c4b64f25b
 +  m.def("concat_and_cache_nvfp4_ds_mla", &concat_and_cache_nvfp4_ds_mla,
 +        "Write MLA KV into the packed nvfp4_ds_mla layout (352 B/token)");
 +}
+diff --git a/docs/features/tool_calling.md b/docs/features/tool_calling.md
+index ae6523191..49c7223ca 100644
+--- a/docs/features/tool_calling.md
++++ b/docs/features/tool_calling.md
+@@ -338,6 +338,32 @@ Supported models:
+ 
+ Flags: `--tool-call-parser deepseek_v31 --chat-template {see_above}`
+ 
++### DeepSeek-V3.2 and DeepSeek-V4 Models
++
++Flags: `--tool-call-parser deepseek_v32` or
++`--tool-call-parser deepseek_v4`, matching the model's DSML wrapper.
++
++This v0.24 reconciliation carries the following upstream parser behavior:
++
++* `string="true|false"` conversion and guarded artificial
++  `arguments`/`input` wrapper unwrapping from vLLM PR
++  [#41801](https://github.com/vllm-project/vllm/pull/41801), merge commit
++  `95582868efd4db0b120e3640bbc61dcfce20d59f`.
++* Incremental argument streaming and split-marker buffering from vLLM PR
++  [#42879](https://github.com/vllm-project/vllm/pull/42879), merge commit
++  `b372ad3e9018f032478619adbc7f7fdcc9318212`.
++* Declared-tool-only recovery of a complete invoke missing its opening wrapper
++  from open vLLM PR
++  [#49117](https://github.com/vllm-project/vllm/pull/49117), adopted at head
++  `7ef0ae2480799e95fb7cb801a8105c1db2585164`.
++
++The #49117 behavior is mechanically adapted to the v0.24 tool-parser state
++machine. Recovery is disabled when no tools are declared or `tool_choice` is
++`none`; rejected and foreign DSML remains content, and request state is reset
++between streams. Object and array parameters use JSON text inside a
++`string="false"` parameter. Recursively nested DSML parameters are not
++supported.
++
+ ### OpenAI OSS Models (`openai`)
+ 
+ Supported models:
 diff --git a/tests/model_executor/layers/test_moe_w2_mapped_host.py b/tests/model_executor/layers/test_moe_w2_mapped_host.py
 new file mode 100644
 index 000000000..9901d1c96
@@ -1125,181 +1162,319 @@ index 000000000..b4155cc7f
 +    torch.cuda.synchronize()
 +    assert torch.equal(replay_a, replay_b)
 diff --git a/tests/tool_parsers/test_deepseekv4_tool_parser.py b/tests/tool_parsers/test_deepseekv4_tool_parser.py
-index 80e3357b6..55284f373 100644
+index 80e3357b6..6311086b0 100644
 --- a/tests/tool_parsers/test_deepseekv4_tool_parser.py
 +++ b/tests/tool_parsers/test_deepseekv4_tool_parser.py
-@@ -303,6 +303,166 @@ def test_extract_tool_calls_arguments_wrapper():
+@@ -74,6 +74,7 @@ def make_parser(tools=None) -> DeepSeekV4ToolParser:
+ def make_request(tools=None) -> MagicMock:
+     req = MagicMock()
+     req.tools = tools
++    req.tool_choice = "auto"
+     return req
+ 
+ 
+@@ -84,9 +85,15 @@ def build_tool_call(func_name: str, params: dict[str, str]) -> str:
+     return f'{TC_START}\n{INV_START}{func_name}">\n{param_strs}{INV_END}\n{TC_END}'
+ 
+ 
+-def stream(parser: DeepSeekV4ToolParser, full_text: str, chunk_size: int = 7):
++def stream(
++    parser: DeepSeekV4ToolParser,
++    full_text: str,
++    chunk_size: int = 7,
++    request=None,
++):
+     deltas = []
+     previous_text = ""
++    request = request or make_request(parser.tools)
+     for start in range(0, len(full_text), chunk_size):
+         delta_text = full_text[start : start + chunk_size]
+         current_text = previous_text + delta_text
+@@ -97,7 +104,7 @@ def stream(parser: DeepSeekV4ToolParser, full_text: str, chunk_size: int = 7):
+             previous_token_ids=[],
+             current_token_ids=[],
+             delta_token_ids=[1],
+-            request=make_request(),
++            request=request,
+         )
+         previous_text = current_text
+         if delta is not None:
+@@ -171,7 +178,8 @@ def test_streaming_extracts_complete_invokes():
+     assert json.loads(reconstruct_args(deltas)) == {"query": "deepseek v4"}
+ 
+ 
+-def test_streaming_emits_incremental_argument_chunks():
++@pytest.mark.parametrize("chunk_size", [1, 4, 17])
++def test_streaming_emits_incremental_argument_chunks(chunk_size: int):
+     tool = ChatCompletionToolsParam(
+         function=FunctionDefinition(
+             name="plan_trip",
+@@ -199,7 +207,7 @@ def test_streaming_emits_incremental_argument_chunks():
+         f"{TC_END}"
+     )
+ 
+-    deltas = stream(parser, full_text, chunk_size=4)
++    deltas = stream(parser, full_text, chunk_size=chunk_size)
+     arg_chunks = [
+         tool_call.function.arguments
+         for delta in deltas
+@@ -214,6 +222,11 @@ def test_streaming_emits_incremental_argument_chunks():
+         "cities": ["Beijing", "Shanghai", "Tokyo", "New York"],
+         "notes": "靠窗座位",
+     }
++    content = "".join(delta.content or "" for delta in deltas)
++    assert "DSML" not in content
++    assert not parser._in_tool_calls
++    assert parser._active_tool_index is None
++    assert parser._buffer == ""
+ 
+ 
+ def _with_strict(
+@@ -303,6 +316,239 @@ def test_extract_tool_calls_arguments_wrapper():
      assert args == {"location": "Beijing"}
  
  
-+def _deferred_bridge_tool() -> ChatCompletionToolsParam:
-+    return ChatCompletionToolsParam(
++def test_string_attribute_and_guarded_wrapper_semantics():
++    tool = ChatCompletionToolsParam(
 +        type="function",
 +        function={
-+            "name": "tool_call",
-+            "description": "Invoke a deferred tool by name with the given arguments.",
++            "name": "record_values",
 +            "parameters": {
 +                "type": "object",
 +                "properties": {
-+                    "name": {"type": "string"},
++                    "literal": {"type": "integer"},
++                    "coerced": {"type": "integer"},
 +                    "arguments": {"type": "object"},
 +                },
-+                "required": ["name", "arguments"],
++            },
++        },
++    )
++    parser = make_parser([tool])
++    output = (
++        f'{TC_START}{INV_START}record_values">'
++        f'{PARAM_START}literal" string="true">007{PARAM_END}'
++        f'{PARAM_START}coerced" string="false">7{PARAM_END}'
++        f'{PARAM_START}arguments" string="false">'
++        '{"nested":{"enabled":true}}'
++        f"{PARAM_END}"
++        f"{INV_END}{TC_END}"
++    )
++
++    result = parser.extract_tool_calls(output, make_request([tool]))
++
++    assert json.loads(result.tool_calls[0].function.arguments) == {
++        "literal": "007",
++        "coerced": 7,
++        "arguments": {"nested": {"enabled": True}},
++    }
++
++
++def test_guarded_artificial_wrapper_rejects_unknown_inner_keys():
++    tool = ChatCompletionToolsParam(
++        type="function",
++        function={
++            "name": "get_weather",
++            "parameters": {
++                "type": "object",
++                "properties": {"location": {"type": "string"}},
++            },
++        },
++    )
++    parser = make_parser([tool])
++    output = (
++        f'{TC_START}{INV_START}get_weather">'
++        f'{PARAM_START}arguments" string="false">'
++        '{"unknown":"Beijing"}'
++        f"{PARAM_END}{INV_END}{TC_END}"
++    )
++
++    result = parser.extract_tool_calls(output, make_request([tool]))
++
++    assert json.loads(result.tool_calls[0].function.arguments) == {
++        "arguments": '{"unknown":"Beijing"}'
++    }
++
++
++def _terminal_tool() -> ChatCompletionToolsParam:
++    return ChatCompletionToolsParam(
++        type="function",
++        function={
++            "name": "terminal_exec",
++            "parameters": {
++                "type": "object",
++                "properties": {
++                    "command": {"type": "string"},
++                    "environment": {"type": "object"},
++                },
 +            },
 +        },
 +    )
 +
 +
-+def _deferred_bridge_output() -> str:
++def _terminal_invoke() -> str:
 +    return (
-+        f"{TC_START}\n"
-+        f'{INV_START}tool_call">\n'
-+        f'{PARAM_START}name" string="true">'
-+        f"deferred_inventory_lookup{PARAM_END}\n"
-+        f'{PARAM_START}arguments" string="false">\n'
-+        f'{PARAM_START}sku" string="true">BRIDGE-731{PARAM_END}\n'
-+        f'{PARAM_START}include_location" string="false">true{PARAM_END}\n'
-+        f"{PARAM_END}\n"
-+        f"{INV_END}\n"
-+        f"{TC_END}"
++        f'{INV_START}terminal_exec">'
++        f'{PARAM_START}command" string="true">printf ready{PARAM_END}'
++        f'{PARAM_START}environment" string="false">'
++        '{"MODE":"safe","FLAGS":{"trace":false}}'
++        f"{PARAM_END}{INV_END}"
 +    )
 +
 +
-+def _nested_deferred_bridge_output() -> str:
-+    return (
-+        f"{TC_START}\n"
-+        f'{INV_START}tool_call">\n'
-+        f'{PARAM_START}name" string="true">'
-+        f"deferred_inventory_lookup{PARAM_END}\n"
-+        f'{PARAM_START}arguments" string="false">\n'
-+        f'{PARAM_START}sku" string="true">BRIDGE-731{PARAM_END}\n'
-+        f'{PARAM_START}filters" string="false">\n'
-+        f'{PARAM_START}warehouse" string="true">east{PARAM_END}\n'
-+        f'{PARAM_START}limits" string="false">\n'
-+        f'{PARAM_START}minimum" string="false">2{PARAM_END}\n'
-+        f"{PARAM_END}\n"
-+        f"{PARAM_END}\n"
-+        f"{PARAM_END}\n"
-+        f"{INV_END}\n"
-+        f"{TC_END}"
-+    )
++def test_orphan_invoke_recovers_declared_nested_terminal_tool_non_streaming():
++    tool = _terminal_tool()
++    output = _terminal_invoke() + TC_END + "\nCommand queued."
++    parser = make_parser([tool])
 +
-+
-+def test_extract_nested_open_object_for_deferred_bridge():
-+    tool = _deferred_bridge_tool()
-+    parser = make_parser(tools=[tool])
-+
-+    result = parser.extract_tool_calls(_deferred_bridge_output(), make_request([tool]))
++    result = parser.extract_tool_calls(output, make_request([tool]))
 +
 +    assert result.tools_called
-+    assert len(result.tool_calls) == 1
-+    assert result.tool_calls[0].function.name == "tool_call"
++    assert result.content == "\nCommand queued."
++    assert result.tool_calls[0].function.name == "terminal_exec"
 +    assert json.loads(result.tool_calls[0].function.arguments) == {
-+        "name": "deferred_inventory_lookup",
-+        "arguments": {"sku": "BRIDGE-731", "include_location": True},
++        "command": "printf ready",
++        "environment": {"MODE": "safe", "FLAGS": {"trace": False}},
 +    }
 +
 +
-+def test_extract_empty_open_object_for_deferred_bridge():
-+    tool = _deferred_bridge_tool()
-+    parser = make_parser(tools=[tool])
-+    model_output = (
-+        f"{TC_START}\n"
-+        f'{INV_START}tool_call">\n'
-+        f'{PARAM_START}name" string="true">'
-+        f"deferred_inventory_lookup{PARAM_END}\n"
-+        f'{PARAM_START}arguments" string="false">{PARAM_END}\n'
-+        f"{INV_END}\n"
-+        f"{TC_END}"
-+    )
++def test_orphan_invoke_streams_without_control_text_leakage():
++    tool = _terminal_tool()
++    parser = make_parser([tool])
++    output = _terminal_invoke() + TC_END
 +
-+    result = parser.extract_tool_calls(model_output, make_request([tool]))
++    deltas = stream(parser, output, chunk_size=1, request=make_request([tool]))
 +
-+    assert json.loads(result.tool_calls[0].function.arguments) == {
-+        "name": "deferred_inventory_lookup",
-+        "arguments": {},
-+    }
-+
-+
-+def test_extract_deeply_nested_open_object_for_deferred_bridge():
-+    tool = _deferred_bridge_tool()
-+    parser = make_parser(tools=[tool])
-+
-+    result = parser.extract_tool_calls(
-+        _nested_deferred_bridge_output(), make_request([tool])
-+    )
-+
-+    assert json.loads(result.tool_calls[0].function.arguments) == {
-+        "name": "deferred_inventory_lookup",
-+        "arguments": {
-+            "sku": "BRIDGE-731",
-+            "filters": {"warehouse": "east", "limits": {"minimum": 2}},
-+        },
-+    }
-+
-+
-+@pytest.mark.parametrize("chunk_size", [1, 5, 17, 64])
-+def test_streaming_nested_open_object_for_deferred_bridge(chunk_size: int):
-+    tool = _deferred_bridge_tool()
-+    parser = make_parser(tools=[tool])
-+
-+    deltas = stream(parser, _deferred_bridge_output(), chunk_size=chunk_size)
-+    arguments = reconstruct_args(deltas)
-+
-+    assert json.loads(arguments) == {
-+        "name": "deferred_inventory_lookup",
-+        "arguments": {"sku": "BRIDGE-731", "include_location": True},
-+    }
-+    assert "DSML" not in arguments
 +    names = [
-+        tool_call.function.name
++        call.function.name
 +        for delta in deltas
-+        for tool_call in delta.tool_calls or []
-+        if tool_call.function and tool_call.function.name
++        for call in delta.tool_calls or []
++        if call.function and call.function.name
 +    ]
++    arguments = reconstruct_args(deltas)
 +    content = "".join(delta.content or "" for delta in deltas)
-+    assert names == ["tool_call"]
++    assert names == ["terminal_exec"]
++    assert json.loads(arguments)["environment"] == {
++        "MODE": "safe",
++        "FLAGS": {"trace": False},
++    }
 +    assert "DSML" not in content
 +    assert "R0TURN" not in content
-+    assert parser.prev_tool_call_arr == [
-+        {
-+            "name": "tool_call",
-+            "arguments": {
-+                "name": "deferred_inventory_lookup",
-+                "arguments": {"sku": "BRIDGE-731", "include_location": True},
-+            },
-+        }
-+    ]
 +    assert not parser._in_tool_calls
 +    assert parser._active_tool_index is None
 +    assert parser._buffer == ""
 +
 +
-+def test_streaming_deeply_nested_open_object_for_deferred_bridge():
-+    tool = _deferred_bridge_tool()
-+    parser = make_parser(tools=[tool])
++@pytest.mark.parametrize("mode", ["unknown", "no-tools", "tool-choice-none"])
++def test_false_orphan_invoke_stays_content(mode: str):
++    tool = _terminal_tool()
++    request = make_request([tool])
++    output = _terminal_invoke()
++    if mode == "unknown":
++        output = output.replace("terminal_exec", "unknown_terminal_tool", 1)
++    elif mode == "no-tools":
++        request.tools = []
++    else:
++        request.tool_choice = "none"
++    parser = make_parser([tool])
 +
-+    deltas = stream(parser, _nested_deferred_bridge_output(), chunk_size=1)
++    result = parser.extract_tool_calls(output, request)
 +
-+    assert json.loads(reconstruct_args(deltas)) == {
-+        "name": "deferred_inventory_lookup",
-+        "arguments": {
-+            "sku": "BRIDGE-731",
-+            "filters": {"warehouse": "east", "limits": {"minimum": 2}},
-+        },
++    assert not result.tools_called
++    assert result.tool_calls == []
++    assert result.content == output
++
++
++@pytest.mark.parametrize("mode", ["unknown", "no-tools", "tool-choice-none"])
++def test_false_orphan_invoke_streaming_stays_content(mode: str):
++    tool = _terminal_tool()
++    request = make_request([tool])
++    output = _terminal_invoke()
++    if mode == "unknown":
++        output = output.replace("terminal_exec", "unknown_terminal_tool", 1)
++    elif mode == "no-tools":
++        request.tools = []
++    else:
++        request.tool_choice = "none"
++    parser = make_parser([tool])
++
++    deltas = stream(parser, output, chunk_size=1, request=request)
++
++    assert reconstruct_args(deltas) == ""
++    assert "".join(delta.content or "" for delta in deltas) == output
++
++
++def test_quoted_marker_then_real_wrapped_terminal_call():
++    tool = _terminal_tool()
++    request = make_request([tool])
++    quoted = f"Documentation quotes {INV_START} literally. "
++    output = quoted + TC_START + _terminal_invoke() + TC_END
++
++    result = make_parser([tool]).extract_tool_calls(output, request)
++    parser = make_parser([tool])
++    deltas = stream(parser, output, chunk_size=1, request=request)
++
++    assert result.tools_called
++    assert result.content == quoted
++    assert json.loads(result.tool_calls[0].function.arguments) == {
++        "command": "printf ready",
++        "environment": {"MODE": "safe", "FLAGS": {"trace": False}},
 +    }
-+    assert not parser._in_tool_calls
-+    assert parser._active_tool_index is None
++    assert json.loads(reconstruct_args(deltas)) == json.loads(
++        result.tool_calls[0].function.arguments
++    )
++    streamed_content = "".join(delta.content or "" for delta in deltas)
++    assert streamed_content == quoted
++
++
++def test_foreign_wrapper_is_preserved_as_content():
++    tool = _terminal_tool()
++    foreign = (
++        "<｜DSML｜function_calls>"
++        + _terminal_invoke()
++        + "</｜DSML｜function_calls>"
++    )
++
++    result = make_parser([tool]).extract_tool_calls(foreign, make_request([tool]))
++    parser = make_parser([tool])
++    deltas = stream(parser, foreign, chunk_size=1, request=make_request([tool]))
++
++    assert not result.tools_called
++    assert result.content == foreign
++    assert reconstruct_args(deltas) == ""
++    assert "".join(delta.content or "" for delta in deltas) == foreign
++
++
++def test_declared_names_do_not_leak_between_streams():
++    tool = _terminal_tool()
++    parser = make_parser([tool])
++    first = stream(parser, _terminal_invoke(), 3, make_request([tool]))
++    assert json.loads(reconstruct_args(first))["command"] == "printf ready"
++
++    second = stream(parser, _terminal_invoke(), 3, make_request([]))
++
++    assert reconstruct_args(second) == ""
++    assert "".join(delta.content or "" for delta in second) == _terminal_invoke()
++
++    non_streaming = make_parser([tool])
++    first_result = non_streaming.extract_tool_calls(
++        _terminal_invoke(), make_request([tool])
++    )
++    second_result = non_streaming.extract_tool_calls(
++        _terminal_invoke(), make_request([])
++    )
++    assert first_result.tools_called
++    assert not second_result.tools_called
++    assert second_result.content == _terminal_invoke()
 +
 +
  @pytest.mark.skip_global_cleanup
  def test_composed_schema_converts_object_and_array_params():
      tool = ChatCompletionToolsParam(
 diff --git a/tests/tool_parsers/test_structural_tag_registry.py b/tests/tool_parsers/test_structural_tag_registry.py
-index bd84b2cbb..8bfb47e72 100644
+index bd84b2cbb..de6921e11 100644
 --- a/tests/tool_parsers/test_structural_tag_registry.py
 +++ b/tests/tool_parsers/test_structural_tag_registry.py
-@@ -5,7 +5,10 @@ from types import SimpleNamespace
+@@ -5,7 +5,9 @@ from types import SimpleNamespace
  from unittest.mock import MagicMock
  
  import pytest
@@ -1307,11 +1482,10 @@ index bd84b2cbb..8bfb47e72 100644
 +from openai.types.responses import FunctionTool
 +from xgrammar import Grammar, StructuralTag
 +from xgrammar.structural_tag import TagsWithSeparatorFormat, TriggeredTagsFormat
-+from xgrammar.testing import _is_grammar_accept_string
  
  from vllm.entrypoints.openai.chat_completion.protocol import (
      ChatCompletionNamedFunction,
-@@ -116,9 +119,10 @@ def test_get_model_structural_tag_supports_vllm_hermes(
+@@ -116,9 +118,10 @@ def test_get_model_structural_tag_supports_vllm_hermes(
                              "type": "object",
                              "properties": {"city": {"type": "string"}},
                              "required": ["city"],
@@ -1324,7 +1498,7 @@ index bd84b2cbb..8bfb47e72 100644
                      "end": "}\n</tool_call>",
                  },
                  {
-@@ -130,9 +134,10 @@ def test_get_model_structural_tag_supports_vllm_hermes(
+@@ -130,9 +133,10 @@ def test_get_model_structural_tag_supports_vllm_hermes(
                              "type": "object",
                              "properties": {"city": {"type": "string"}},
                              "required": ["city"],
@@ -1337,7 +1511,7 @@ index bd84b2cbb..8bfb47e72 100644
                      "end": "}</tool_call>",
                  },
              ],
-@@ -346,3 +351,235 @@ def test_get_function_parameters_relaxes_function_strict_false():
+@@ -346,3 +350,215 @@ def test_get_function_parameters_relaxes_function_strict_false():
      )
  
      assert _get_function_parameters(function) is True
@@ -1545,27 +1719,7 @@ index bd84b2cbb..8bfb47e72 100644
 +
 +        assert isinstance(tag, StructuralTag)
 +        assert isinstance(tag.format, TriggeredTagsFormat)
-+        grammar = Grammar.from_structural_tag(tag)
-+        assert grammar is not None
-+        valid = (
-+            '<｜DSML｜tool_calls>\n<｜DSML｜invoke name="tool_call">\n'
-+            '<｜DSML｜parameter name="name" string="true">'
-+            "deferred_inventory_lookup</｜DSML｜parameter>"
-+            '<｜DSML｜parameter name="arguments" string="false">'
-+            '<｜DSML｜parameter name="sku" string="true">'
-+            "BRIDGE-731</｜DSML｜parameter>"
-+            '<｜DSML｜parameter name="include_location" string="false">'
-+            "true</｜DSML｜parameter>"
-+            "</｜DSML｜parameter></｜DSML｜invoke>\n"
-+            "</｜DSML｜tool_calls>"
-+        )
-+        invalid_outer_field = valid.replace(
-+            "</｜DSML｜invoke>",
-+            '<｜DSML｜parameter name="include_location" string="false">'
-+            "true</｜DSML｜parameter></｜DSML｜invoke>",
-+        )
-+        assert _is_grammar_accept_string(grammar, valid)
-+        assert not _is_grammar_accept_string(grammar, invalid_outer_field)
++        assert Grammar.from_structural_tag(tag) is not None
 +        assert tool.function.strict is None
 +        assert tool.function.parameters is not None
 +        arguments = tool.function.parameters["properties"]["arguments"]
@@ -14542,184 +14696,420 @@ index a1c4cf1ff..e661ecadc 100644
  
      def extract_tool_calls(
 diff --git a/vllm/tool_parsers/deepseekv32_tool_parser.py b/vllm/tool_parsers/deepseekv32_tool_parser.py
-index c597ac619..18d13b012 100644
+index c597ac619..e2fffc1d0 100644
 --- a/vllm/tool_parsers/deepseekv32_tool_parser.py
 +++ b/vllm/tool_parsers/deepseekv32_tool_parser.py
-@@ -83,10 +83,6 @@ class DeepSeekV32ToolParser(ToolParser):
-         self.invoke_complete_regex = re.compile(
-             r'<｜DSML｜invoke\s+name="([^"]+)"\s*>(.*?)</｜DSML｜invoke>', re.DOTALL
-         )
--        self.parameter_complete_regex = re.compile(
--            r'<｜DSML｜parameter\s+name="([^"]+)"\s+string="(true|false)"\s*>(.*?)</｜DSML｜parameter>',
--            re.DOTALL,
--        )
-         self.invoke_start_regex = re.compile(r'<｜DSML｜invoke\s+name="([^"]+)"\s*>')
-         self.parameter_start_regex = re.compile(
-             r'<｜DSML｜parameter\s+name="([^"]+)"\s+string="(true|false)"\s*>'
-@@ -120,12 +116,55 @@ class DeepSeekV32ToolParser(ToolParser):
+@@ -28,6 +28,7 @@ from vllm.tool_parsers.abstract_tool_parser import (
+ )
+ from vllm.tool_parsers.utils import (
+     coerce_to_schema_type,
++    collect_tool_names,
+     extract_types_from_schema,
+     find_tool_properties,
+     partial_tag_overlap,
+@@ -53,6 +54,10 @@ class DeepSeekV32ToolParser(ToolParser):
+ 
+     tool_call_start_token: str = "<｜DSML｜function_calls>"
+     tool_call_end_token: str = "</｜DSML｜function_calls>"
++    foreign_tool_call_start_token: str = "<｜DSML｜tool_calls>"
++    foreign_tool_call_end_token: str = "</｜DSML｜tool_calls>"
++    invoke_prefix_token: str = '<｜DSML｜invoke name="'
++    invoke_name_end_token: str = '">'
+     structural_tag_model = "deepseek_v3_2"
+ 
+     def __init__(self, tokenizer: TokenizerLike, tools: list[Tool] | None = None):
+@@ -72,6 +77,10 @@ class DeepSeekV32ToolParser(ToolParser):
+         self._active_param_mode: str | None = None
+         self._active_param_parts: list[str] = []
+         self._args_started: list[bool] = []
++        self._allowed_tool_names: frozenset[str] = frozenset()
++        self._orphan_tool_calls: bool = False
++        self._in_foreign_tool_calls: bool = False
++        self._after_orphan: bool = False
+ 
+         # Regex patterns for complete parsing
+         self.tool_call_complete_regex = re.compile(
+@@ -120,6 +129,15 @@ class DeepSeekV32ToolParser(ToolParser):
          """Generate a unique tool call ID."""
          return f"call_{uuid.uuid4().hex[:24]}"
  
-+    def _find_parameter_end(
-+        self,
-+        text: str,
-+        content_start: int = 0,
-+    ) -> tuple[int, int] | None:
-+        """Find the closing tag paired with an already-consumed parameter.
-+
-+        DeepSeek's structural grammar represents object-valued parameters as
-+        nested DSML parameter tags. A non-greedy regex therefore stops at the
-+        first child closing tag instead of the outer parameter boundary.
-+        """
-+        end_token = "</｜DSML｜parameter>"
-+        depth = 1
-+        cursor = content_start
-+        while True:
-+            next_start = self.parameter_start_regex.search(text, cursor)
-+            next_end = text.find(end_token, cursor)
-+            if next_end == -1:
-+                return None
-+            if next_start is not None and next_start.start() < next_end:
-+                depth += 1
-+                cursor = next_start.end()
-+                continue
-+            depth -= 1
-+            if depth == 0:
-+                return next_end, next_end + len(end_token)
-+            cursor = next_end + len(end_token)
++    def _prepare_request(self, request: ChatCompletionRequest) -> None:
++        tools = getattr(request, "tools", None)
++        if tools is not None:
++            self.tools = tools
++        if tools and getattr(request, "tool_choice", None) != "none":
++            self._allowed_tool_names = collect_tool_names(tools)
++        else:
++            self._allowed_tool_names = frozenset()
 +
      def _parse_invoke_params(self, invoke_str: str) -> dict[str, tuple[str, str]]:
-+        """Parse the top-level parameters of one invoke, preserving children."""
          param_dict: dict[str, tuple[str, str]] = {}
--        for param_name, string_attr, param_val in self.parameter_complete_regex.findall(
--            invoke_str
--        ):
--            param_dict[param_name] = (param_val, string_attr)
+         for param_name, string_attr, param_val in self.parameter_complete_regex.findall(
+@@ -183,6 +201,11 @@ class DeepSeekV32ToolParser(ToolParser):
+         request: ChatCompletionRequest,
+     ) -> ExtractedToolCallInformation:
+         """Extract tool calls from complete model output (non-streaming)."""
++        self._prepare_request(request)
++
++        if self.invoke_prefix_token in model_output:
++            return self._extract_tool_calls_with_orphan_recovery(model_output)
++
+         # Quick check
+         if self.tool_call_start_token not in model_output:
+             return ExtractedToolCallInformation(
+@@ -198,16 +221,8 @@ class DeepSeekV32ToolParser(ToolParser):
+                 for invoke_name, invoke_content in self.invoke_complete_regex.findall(
+                     tool_call_match
+                 ):
+-                    param_dict = self._parse_invoke_params(invoke_content)
+-                    params = self._convert_params_with_schema(invoke_name, param_dict)
+                     tool_calls.append(
+-                        ToolCall(
+-                            type="function",
+-                            function=FunctionCall(
+-                                name=invoke_name,
+-                                arguments=json.dumps(params, ensure_ascii=False),
+-                            ),
+-                        )
++                        self._make_tool_call(invoke_name, invoke_content)
+                     )
+ 
+             if not tool_calls:
+@@ -229,6 +244,117 @@ class DeepSeekV32ToolParser(ToolParser):
+                 tools_called=False, tool_calls=[], content=model_output
+             )
+ 
++    def _make_tool_call(self, invoke_name: str, invoke_content: str) -> ToolCall:
++        param_dict = self._parse_invoke_params(invoke_content)
++        params = self._convert_params_with_schema(invoke_name, param_dict)
++        return ToolCall(
++            type="function",
++            function=FunctionCall(
++                name=invoke_name,
++                arguments=json.dumps(params, ensure_ascii=False),
++            ),
++        )
++
++    def _extract_tool_calls_with_orphan_recovery(
++        self, model_output: str
++    ) -> ExtractedToolCallInformation:
++        """Adapt the orphan-invoke recovery from vLLM PR #49117."""
++        tool_calls: list[ToolCall] = []
++        content_parts: list[str] = []
 +        cursor = 0
-+        while cursor < len(invoke_str):
-+            while cursor < len(invoke_str) and invoke_str[cursor].isspace():
-+                cursor += 1
-+            if cursor == len(invoke_str):
++
++        while cursor < len(model_output):
++            candidates = [
++                (model_output.find(self.tool_call_start_token, cursor), "native"),
++                (
++                    model_output.find(self.foreign_tool_call_start_token, cursor),
++                    "foreign",
++                ),
++            ]
++            if self._allowed_tool_names:
++                candidates.append(
++                    (model_output.find(self.invoke_prefix_token, cursor), "orphan")
++                )
++            candidates = [(idx, kind) for idx, kind in candidates if idx >= 0]
++            if not candidates:
++                content_parts.append(model_output[cursor:])
 +                break
-+            match = self.parameter_start_regex.match(invoke_str, cursor)
-+            if match is None:
-+                raise ValueError("Unexpected text in DeepSeek DSML invoke parameters")
-+            bounds = self._find_parameter_end(invoke_str, match.end())
-+            if bounds is None:
-+                raise ValueError("Unclosed DeepSeek DSML parameter")
-+            end_start, end_after = bounds
-+            param_dict[match.group(1)] = (
-+                invoke_str[match.end() : end_start],
-+                match.group(2),
-+            )
-+            cursor = end_after
-         return param_dict
- 
-     @staticmethod
-@@ -158,13 +197,53 @@ class DeepSeekV32ToolParser(ToolParser):
-         """Convert raw string param values using the tool schema types."""
-         param_config = find_tool_properties(self.tools, function_name)
- 
-+        return self._convert_param_dict(param_dict, param_config)
 +
-+    def _convert_param_dict(
-+        self,
-+        param_dict: dict[str, tuple[str, str]],
-+        param_config: dict[str, Any],
-+        *,
-+        open_object: bool = False,
-+    ) -> dict[str, Any]:
-+        """Convert one DSML object, including nested parameter objects."""
++            marker_idx, marker_kind = min(candidates, key=lambda item: item[0])
++            content_parts.append(model_output[cursor:marker_idx])
 +
-         converted: dict[str, Any] = {}
-         for name, (value, string_attr) in param_dict.items():
-             if string_attr == "true":
-                 converted[name] = value
-                 continue
- 
--            param_types = extract_types_from_schema(param_config.get(name, {}))
-+            schema = param_config.get(name, {})
-+            param_types = extract_types_from_schema(schema)
-+            stripped = value.strip()
-+            if not stripped and ("object" in param_types or open_object):
-+                converted[name] = {}
-+                continue
-+            nested_parameter = self.parameter_start_regex.match(stripped)
-+            if nested_parameter and (
-+                "object" in param_types or (open_object and not schema)
-+            ):
-+                nested_config = (
-+                    schema.get("properties", {}) if isinstance(schema, dict) else {}
++            if marker_kind == "foreign":
++                foreign_end = model_output.find(
++                    self.foreign_tool_call_end_token,
++                    marker_idx + len(self.foreign_tool_call_start_token),
 +                )
-+                nested_params = self._parse_invoke_params(stripped)
-+                converted[name] = self._convert_param_dict(
-+                    nested_params,
-+                    nested_config,
-+                    open_object=(
-+                        open_object
-+                        if not schema
-+                        else schema.get("additionalProperties", True) is not False
-+                    ),
++                native_inside = model_output.find(
++                    self.tool_call_start_token,
++                    marker_idx + len(self.foreign_tool_call_start_token),
 +                )
-+                continue
-+            if open_object and not schema:
-+                try:
-+                    converted[name] = json.loads(stripped)
-+                except json.JSONDecodeError:
-+                    converted[name] = value
-+                continue
-             converted[name] = coerce_to_schema_type(value, param_types)
-         return self._repair_param_dict(converted, param_config)
- 
-@@ -444,11 +523,28 @@ class DeepSeekV32ToolParser(ToolParser):
-             index = self._active_tool_index
- 
-             if self._active_param_mode is not None:
-+                if self._active_param_mode in ("wrapper", "object"):
-+                    combined = "".join(self._active_param_parts) + self._buffer
-+                    bounds = self._find_parameter_end(combined)
-+                    if bounds is None:
-+                        self._active_param_parts[:] = [combined]
-+                        self._buffer = ""
-+                        return
-+                    end_pos, end_after = bounds
-+                    self._active_param_parts[:] = [combined[:end_pos]]
-+                    self._buffer = combined[end_after:]
-+                    self._finish_buffered_param(tool_call_deltas, index)
-+                    self._active_param_name = None
-+                    self._active_param_string_attr = None
-+                    self._active_param_mode = None
-+                    self._active_param_parts.clear()
++                if native_inside >= 0 and (
++                    foreign_end < 0 or native_inside < foreign_end
++                ):
++                    content_parts.append(model_output[marker_idx:native_inside])
++                    cursor = native_inside
 +                    continue
++                if foreign_end < 0:
++                    content_parts.append(model_output[marker_idx:])
++                    break
++                foreign_after = foreign_end + len(self.foreign_tool_call_end_token)
++                content_parts.append(model_output[marker_idx:foreign_after])
++                cursor = foreign_after
++                continue
 +
-                 end_pos = self._buffer.find(parameter_end_token)
-                 if end_pos != -1:
-                     raw_content = self._buffer[:end_pos]
-                     self._buffer = self._buffer[end_pos + len(parameter_end_token) :]
--                    if self._active_param_mode in ("wrapper", "buffered"):
-+                    if self._active_param_mode == "buffered":
-                         self._active_param_parts.append(raw_content)
-                         self._finish_buffered_param(tool_call_deltas, index)
-                     elif self._active_param_mode == "string":
-@@ -472,7 +568,7 @@ class DeepSeekV32ToolParser(ToolParser):
-                 if safe_len > 0:
-                     raw_content = self._buffer[:safe_len]
-                     self._buffer = self._buffer[safe_len:]
--                    if self._active_param_mode in ("wrapper", "buffered"):
-+                    if self._active_param_mode == "buffered":
-                         self._active_param_parts.append(raw_content)
-                     elif self._active_param_mode == "string":
-                         self._add_tool_call_delta(
-@@ -516,6 +612,9 @@ class DeepSeekV32ToolParser(ToolParser):
++            if marker_kind == "native":
++                block_end = model_output.find(
++                    self.tool_call_end_token,
++                    marker_idx + len(self.tool_call_start_token),
++                )
++                if block_end < 0:
++                    content_parts.append(model_output[marker_idx:])
++                    break
++                block_after = block_end + len(self.tool_call_end_token)
++                block = model_output[
++                    marker_idx + len(self.tool_call_start_token) : block_end
++                ]
++                parsed = [
++                    self._make_tool_call(name, invoke_content)
++                    for name, invoke_content in (
++                        self.invoke_complete_regex.findall(block)
++                    )
++                ]
++                if parsed:
++                    tool_calls.extend(parsed)
++                else:
++                    content_parts.append(model_output[marker_idx:block_after])
++                cursor = block_after
++                continue
++
++            match = self.invoke_complete_regex.match(model_output, marker_idx)
++            if match is None or match.group(1) not in self._allowed_tool_names:
++                content_parts.append(model_output[marker_idx])
++                cursor = marker_idx + 1
++                continue
++            tool_calls.append(self._make_tool_call(match.group(1), match.group(2)))
++            cursor = match.end()
++            closing = re.match(
++                r"\s*" + re.escape(self.tool_call_end_token), model_output[cursor:]
++            )
++            if closing is not None:
++                cursor += closing.end()
++
++        if not tool_calls:
++            return ExtractedToolCallInformation(
++                tools_called=False, tool_calls=[], content=model_output
++            )
++        content = "".join(content_parts)
++        return ExtractedToolCallInformation(
++            tools_called=True,
++            tool_calls=tool_calls,
++            content=content if content.strip() else None,
++        )
++
+     def _reset_streaming_state(self):
+         """Reset all streaming state."""
+         self.current_tool_index = 0
+@@ -244,6 +370,145 @@ class DeepSeekV32ToolParser(ToolParser):
+         self.prev_tool_call_arr.clear()
+         self.streamed_args_for_tool.clear()
+         self._args_started.clear()
++        self._allowed_tool_names = frozenset()
++        self._orphan_tool_calls = False
++        self._in_foreign_tool_calls = False
++        self._after_orphan = False
++
++    @staticmethod
++    def _first_marker(text: str, markers: list[str]) -> tuple[int, str] | None:
++        found = [(text.find(marker), marker) for marker in markers]
++        found = [(idx, marker) for idx, marker in found if idx >= 0]
++        return min(found, default=None, key=lambda item: item[0])
++
++    def _can_grow_into_allowed_name(self, name_text: str) -> bool:
++        candidates = [name_text]
++        for size in range(1, len(self.invoke_name_end_token)):
++            if name_text.endswith(self.invoke_name_end_token[:size]):
++                candidates.append(name_text[:-size])
++        return any(
++            allowed.startswith(candidate)
++            for allowed in self._allowed_tool_names
++            for candidate in candidates
++        )
++
++    def _process_content_buffer(
++        self,
++        content_parts: list[str],
++        tool_call_deltas: dict[int, DeltaToolCall],
++    ) -> bool:
++        markers = [self.tool_call_start_token, self.foreign_tool_call_start_token]
++        if self._allowed_tool_names:
++            markers.append(self.invoke_prefix_token)
++
++        if self._after_orphan:
++            stripped = self._buffer.lstrip()
++            if not stripped:
++                return False
++            if stripped.startswith(self.tool_call_end_token):
++                self._buffer = stripped[len(self.tool_call_end_token) :]
++                self._after_orphan = False
++                return True
++            if self.tool_call_end_token.startswith(stripped):
++                return False
++            recoverable = [self.tool_call_start_token, self.invoke_prefix_token]
++            if any(
++                marker.startswith(stripped) or stripped.startswith(marker)
++                for marker in recoverable
++            ):
++                self._buffer = stripped
++                self._after_orphan = False
++                return True
++            content_parts.append(self._buffer)
++            self._buffer = ""
++            self._after_orphan = False
++            return False
++
++        if self._in_foreign_tool_calls:
++            foreign_markers = [
++                self.foreign_tool_call_end_token,
++                self.tool_call_start_token,
++            ]
++            found = self._first_marker(self._buffer, foreign_markers)
++            if found is None:
++                overlap = max(
++                    partial_tag_overlap(self._buffer, marker)
++                    for marker in foreign_markers
++                )
++                safe_len = len(self._buffer) - overlap
++                if safe_len > 0:
++                    content_parts.append(self._buffer[:safe_len])
++                    self._buffer = self._buffer[safe_len:]
++                return False
++            marker_idx, marker = found
++            if marker_idx > 0:
++                content_parts.append(self._buffer[:marker_idx])
++                self._buffer = self._buffer[marker_idx:]
++            if marker == self.tool_call_start_token:
++                self._buffer = self._buffer[len(marker) :]
++                self._in_foreign_tool_calls = False
++                self._in_tool_calls = True
++                return True
++            content_parts.append(marker)
++            self._buffer = self._buffer[len(marker) :]
++            self._in_foreign_tool_calls = False
++            return True
++
++        found = self._first_marker(self._buffer, markers)
++        if found is None:
++            overlap = max(
++                partial_tag_overlap(self._buffer, marker) for marker in markers
++            )
++            safe_len = len(self._buffer) - overlap
++            if safe_len > 0:
++                content_parts.append(self._buffer[:safe_len])
++                self._buffer = self._buffer[safe_len:]
++            return False
++
++        marker_idx, marker = found
++        if marker_idx > 0:
++            content_parts.append(self._buffer[:marker_idx])
++            self._buffer = self._buffer[marker_idx:]
++            return True
++
++        if marker == self.tool_call_start_token:
++            self._buffer = self._buffer[len(marker) :]
++            self._in_tool_calls = True
++            self._orphan_tool_calls = False
++            return True
++        if marker == self.foreign_tool_call_start_token:
++            content_parts.append(marker)
++            self._buffer = self._buffer[len(marker) :]
++            self._in_foreign_tool_calls = True
++            return True
++
++        name_text = self._buffer[len(self.invoke_prefix_token) :]
++        native_idx = name_text.find(self.tool_call_start_token)
++        name_end = name_text.find(self.invoke_name_end_token)
++        if native_idx >= 0 and (name_end < 0 or native_idx < name_end):
++            content_parts.append(
++                self._buffer[: len(self.invoke_prefix_token) + native_idx]
++            )
++            self._buffer = name_text[native_idx:]
++            return True
++        if name_end < 0:
++            if self._can_grow_into_allowed_name(name_text):
++                return False
++            content_parts.append(self._buffer[0])
++            self._buffer = self._buffer[1:]
++            return True
++
++        name = name_text[:name_end]
++        if name not in self._allowed_tool_names:
++            content_parts.append(self._buffer[0])
++            self._buffer = self._buffer[1:]
++            return True
++
++        self._buffer = name_text[name_end + len(self.invoke_name_end_token) :]
++        self._in_tool_calls = True
++        self._orphan_tool_calls = True
++        self._begin_streaming_tool_call(name, tool_call_deltas)
++        return True
+ 
+     def _add_tool_call_delta(
+         self,
+@@ -402,25 +667,9 @@ class DeepSeekV32ToolParser(ToolParser):
+ 
+         while True:
+             if not self._in_tool_calls:
+-                start_idx = self._buffer.find(self.tool_call_start_token)
+-                if start_idx == -1:
+-                    overlap = partial_tag_overlap(
+-                        self._buffer, self.tool_call_start_token
+-                    )
+-                    sendable_idx = len(self._buffer) - overlap
+-                    if sendable_idx > 0:
+-                        content_parts.append(self._buffer[:sendable_idx])
+-                        self._buffer = self._buffer[sendable_idx:]
+-                    return
+-
+-                if start_idx > 0:
+-                    content_parts.append(self._buffer[:start_idx])
+-                    self._buffer = self._buffer[start_idx:]
++                if self._process_content_buffer(content_parts, tool_call_deltas):
+                     continue
+-
+-                self._buffer = self._buffer[len(self.tool_call_start_token) :]
+-                self._in_tool_calls = True
+-                continue
++                return
+ 
+             if self._active_tool_index is None:
+                 stripped_len = len(self._buffer) - len(self._buffer.lstrip())
+@@ -493,7 +742,12 @@ class DeepSeekV32ToolParser(ToolParser):
+ 
+             if self._buffer.startswith(invoke_end_token):
+                 self._buffer = self._buffer[len(invoke_end_token) :]
++                was_orphan = self._orphan_tool_calls
+                 self._close_streaming_tool_call(tool_call_deltas)
++                if was_orphan:
++                    self._in_tool_calls = False
++                    self._orphan_tool_calls = False
++                    self._after_orphan = True
                  continue
  
-             param_types = self._param_types_for_name(name)
-+            if "object" in param_types:
-+                self._active_param_mode = "object"
-+                continue
-             if not self._can_stream_raw_param(param_types):
-                 self._active_param_mode = "buffered"
-                 continue
+             match = self.parameter_start_regex.match(self._buffer)
+@@ -542,12 +796,18 @@ class DeepSeekV32ToolParser(ToolParser):
+         # First chunk of a new stream — reset state from prior request.
+         if not previous_text:
+             self._reset_streaming_state()
++            self._prepare_request(request)
+ 
+         self._buffer += delta_text
+         content_parts: list[str] = []
+         tool_call_deltas: dict[int, DeltaToolCall] = {}
+         self._process_streaming_buffer(content_parts, tool_call_deltas)
+ 
++        if not delta_text and self._buffer and not self._in_tool_calls:
++            if not self._after_orphan:
++                content_parts.append(self._buffer)
++            self._buffer = ""
++
+         if content_parts or tool_call_deltas:
+             content = "".join(content_parts) or None
+             return DeltaMessage(
+diff --git a/vllm/tool_parsers/deepseekv4_tool_parser.py b/vllm/tool_parsers/deepseekv4_tool_parser.py
+index 2558f585f..4bcc74d35 100644
+--- a/vllm/tool_parsers/deepseekv4_tool_parser.py
++++ b/vllm/tool_parsers/deepseekv4_tool_parser.py
+@@ -14,4 +14,6 @@ class DeepSeekV4ToolParser(DeepSeekV32ToolParser):
+ 
+     tool_call_start_token: str = "<｜DSML｜tool_calls>"
+     tool_call_end_token: str = "</｜DSML｜tool_calls>"
++    foreign_tool_call_start_token: str = "<｜DSML｜function_calls>"
++    foreign_tool_call_end_token: str = "</｜DSML｜function_calls>"
+     structural_tag_model = "deepseek_v4"
 diff --git a/vllm/tool_parsers/structural_tag_registry.py b/vllm/tool_parsers/structural_tag_registry.py
 index 99c92f8f0..f1ebdbec7 100644
 --- a/vllm/tool_parsers/structural_tag_registry.py
@@ -14783,6 +15173,30 @@ index 99c92f8f0..f1ebdbec7 100644
          return dumped_tool
      return dict(dumped_tool)
  
+diff --git a/vllm/tool_parsers/utils.py b/vllm/tool_parsers/utils.py
+index a31420cf1..700ff48e5 100644
+--- a/vllm/tool_parsers/utils.py
++++ b/vllm/tool_parsers/utils.py
+@@ -213,6 +213,19 @@ def find_tool_name(
+     return False
+ 
+ 
++def collect_tool_names(tools: list[Tool] | None) -> frozenset[str]:
++    """Collect the names of all declared function tools."""
++    if not tools:
++        return frozenset()
++    names: set[str] = set()
++    for tool in tools:
++        if not _is_function_tool(tool):
++            continue
++        name, _ = _extract_tool_info(tool)
++        names.add(name)
++    return frozenset(names)
++
++
+ def _get_tool_schema_from_tool(tool: Tool) -> dict:
+     name, params = _extract_tool_info(tool)
+     params = params if params else {"type": "object", "properties": {}}
 diff --git a/vllm/transformers_utils/configs/speculators/algos.py b/vllm/transformers_utils/configs/speculators/algos.py
 index 0dc3ccce0..fb75a278c 100644
 --- a/vllm/transformers_utils/configs/speculators/algos.py

@@ -1,161 +1,74 @@
-# AGENTS.md — the commit contract
+# AGENTS.md — repository operating contract
 
-Multiple agents and humans work on this project concurrently, often in the
-**same checkout**. Work has been lost here three separate times by treating
-the generated patch as a source file. Read this before your first commit;
-every rule below traces back to a real incident.
+This repository publishes vLLM-MoET runtime patches, serving recipes,
+documentation, validation suites, kernels, and measured results. Keep changes
+reviewable and proportional to what actually changed.
 
-## The iron rule
+## Runtime and generated-patch contract
 
-`patch/vllm-moet-v0.24.0.patch` is a **generated artifact**: byte-for-byte
-`git diff v0.24.0 moet-v0.24.0` from the vllm fork clone. It is **never
-edited by hand**, never patched incrementally, never regenerated from
-anything but the fork branch. The only sanctioned way to change it:
-
-```bash
-python3 tools/check_patch_files.py --update
-```
-
-If your change touches vLLM code, it goes to the **fork branch first**; the
-patch is derived afterwards. A change that exists only inside the patch file
-WILL be erased by somebody's next regeneration.
-
-## The two repos on this box
-
-| repo | path | branch | role |
-|---|---|---|---|
-| **vLLM-Moet** (this one, public) | `/workspace/vllm-moet` | `main` | publication: generated patch, kernels + cubins, bench system, docs |
-| **vllm fork clone** | `/workspace/vllm-v0.24.0` | `moet-v0.24.0` | **source of truth for ALL vLLM code**; remotes: `fork` = `kacper-daftcode/vllm`, `origin` = `vllm-project/vllm` |
-
-`/root/workspace` is a symlink to `/workspace`. Upstream-PR branches and
-experiments live in worktrees off the same clone
-(`git -C /workspace/vllm-v0.24.0 worktree list`).
-
-`moet-v0.24.0` is the ship lineage: everything committed there is meant to
-ship in the next patch regen. Park half-done work on a side branch or
-worktree, not on `moet-v0.24.0`.
-
-## Where a change goes
-
-| change | commit where | must also update |
-|---|---|---|
-| vLLM runtime code (`moe_w2_*`, loaders, runner, attention, …) | fork branch `moet-v0.24.0` | regen the patch here — procedure below |
-| SASS kernels / cubins | `kernels/` | a `kernels/MANIFEST.md` row (generator + validation status) |
-| serve configs | `bench/recipes/` | `bench/models.yaml`, `bench/matrix.yaml`; run `bench/runner/lint.py` |
-| bench results | `bench/results/<release>/` | `bench/runner/render.py` — the README table and per-release report are **generated**; never hand-edit the marked README block |
-| docs | `docs/`, README outside the generated block | — |
-| session notes / handoffs / experiment scraps | `internal/` (gitignored, stays local) | never into `docs/` |
-
-Never commit: wheels (`patch/*.whl` is ignored), checkpoints, expert packs,
-smoke results (`bench/results/smoke/`).
-
-## Shipping a vLLM code change — the procedure
-
-1. **Commit on the fork branch** (`/workspace/vllm-v0.24.0`,
-   `moet-v0.24.0`). If the remote may have moved, fetch and merge first —
-   the regen tool refuses to run when the local branch is missing pushed
-   commits.
-2. **Regenerate** from this repo:
-
-   ```bash
-   python3 tools/check_patch_files.py --update
-   ```
-
-   This rewrites the patch from the branch tip and updates the two
-   committed fingerprints: `patch/FILES.txt` (file list) and
-   `patch/SOURCE.txt` (the fork SHA the patch was generated from). It
-   refuses to move `SOURCE.txt` backwards along the branch, so a
-   regeneration can never roll back work that already shipped.
-3. **Review `git diff patch/`.** An entry *vanishing* from `FILES.txt`
-   means the patch carried work that never reached the fork branch —
-   someone skipped step 1. **Stop and merge that work into the branch**;
-   never ship the loss, never `--update` a second time to silence it.
-4. **Validate what the change class requires.** Byte-exact generation from
-   the branch already guarantees `git apply --check` on the tag. For
-   GPU-relevant changes run the relevant suites
-   (`tools/test_moe_w2_forward.py`, `tools/test_store_backends.py`, the
-   three-tier tests) and put the results in the commit message, as the
-   existing history does.
-5. **Commit both repos, cross-referenced.** The vLLM-Moet commit that ships
-   a regen names the fork SHA, following the established style:
-
-   > `Three-tier starvation fix ships: step-scoped seen windows (vllm 9736e4d34)`
-
-6. **Push both together** (`fork moet-v0.24.0` + `origin main`) once the
-   pre-push checklist passes — or leave both unpushed. Avoid a lasting
-   state where only one side is pushed.
-
-## Concurrency — several agents, one checkout
-
-- `git status` before you start. Dirty paths you did not create belong to
-  another live session: **leave them alone**. No `git add -A`, no
-  `git commit -a`, no `git stash`, no `git checkout --` / `git reset` over
-  someone else's files, ever.
-- Stage **explicit paths only**: `git add <file> <file> …`.
-- `main` and `moet-v0.24.0` are shared trunks: no amending commits you did
-  not just create, no rebase, no force-push, no history rewrite.
-- The `patch/` trio (patch, `FILES.txt`, `SOURCE.txt`) changes **only** via
-  `--update`. If your commit would touch any of them for another reason,
-  you are doing something wrong.
-- **Hardware is shared too, and a written claim is not a lock.** Two sessions
-  landed on the same GPU 48 s apart on 2026-07-25 because both had surveyed
-  free cards minutes earlier. Re-check `docker ps` and `nvidia-smi` **in the
-  same command that launches**, and again ~15 s after the container is up; if
-  a foreign container holds your GPU, **whoever started later kills their
-  own**. The rule caught the next collision the same day, at the preflight,
-  with no container created.
-- Name containers with a per-session prefix so ownership is readable straight
-  from `docker ps`, and never remove another session's container — dump its
-  log first even when it is your own, because a crashed engine's stack trace
-  lives only there.
-- Long-lived cross-session state (who holds what, findings that change how the
-  other session should read its numbers) goes in an `internal/COORDINATION_*.md`
-  with an append-only message log. Read it when you start a work block.
-- A pre-commit hook in this checkout runs the patch guard whenever `patch/`
-  is staged. Do not bypass it with `--no-verify`.
-- Commit identity: no global git identity is configured on this box —
-  pass the session identity per command, matching the existing history:
+- The owned `jpezzulli/vllm` `moet-v0.24.0` branch is the source of truth for
+  every vLLM runtime change.
+- Never hand-edit `patch/vllm-moet-v0.24.0.patch`, `patch/FILES.txt`, or
+  `patch/SOURCE.txt`.
+- Regenerate that trio only with:
 
   ```bash
-  git -c user.name=vllm-moet -c user.email=moet@local commit ...
+  VLLM_MOET_FORK=/path/to/vllm-fork \
+    python tools/check_patch_files.py --update
   ```
 
-  Upstream PRs use the user's public identity + DCO instead — see
-  `internal/UPSTREAM_PRS.md`. Never edit git config.
+- Commit runtime source first. The publication commit must name the exact
+  runtime SHA, and the runtime/publication commits must be pushed together.
+- Review every regenerated patch diff. No previously published patch file may
+  disappear unless that removal is intentional and documented.
+- Preserve unrelated worktree changes and stage explicit paths only. Never
+  force-push, rewrite shared history, use `git add -A` in a mixed worktree, or
+  edit generated patch artifacts into agreement by hand.
 
-## Pre-push checklist (mirrors CI `bench-lint`)
+## Proportional validation
 
-```bash
-python3 tools/check_patch_files.py       # patch <-> FILES.txt <-> SOURCE.txt
-python3 bench/runner/lint.py             # recipes/boxes/suites/results schemas
-python3 bench/runner/lint.py --release current  # strict live release gate
-python3 -m unittest discover -s bench/tests -p 'test_*.py' -v
-python3 bench/runner/render.py --check   # README table == committed results
-```
+Run each unique test set once. Do not rerun overlapping subsets merely to
+accumulate pass counts. Record the wall-clock duration and result of every
+validation command.
 
-Plus `python3 docker/serve_recipe.py <recipe> --print` if you touched
-recipes or the launcher.
+- Runtime code: run focused unit tests for the changed behavior, relevant
+  Python compilation/lint checks, and `tools/check_patch_files.py` after the
+  runtime commit is regenerated here.
+- Patch-only publication: run `tools/check_patch_files.py` with the generating
+  runtime checkout available so byte identity is verified.
+- Bench recipes, models, matrices, results, or generated README inputs: run
+  the corresponding bench lint, tests, and render check. Do not run those
+  suites for unrelated documentation or runtime-only changes.
+- Launcher or serving configuration: validate shell syntax and the rendered
+  command. Perform hardware startup/smoke validation only when the requested
+  change requires it.
+- Validation harness changes: run its dry-run/replay/integrity tests. Do not
+  contact a model unless the task explicitly calls for live collection.
 
-## The incidents these rules come from
+If a required check cannot run, record the exact reason and keep the claim
+boundary narrow.
 
-- **Kimi-K2.7 bring-up** — landed in the patch without its commits reaching
-  the fork branch; the next regeneration erased it; caught by hand, folded
-  back in `81c1b34`.
-- **DSpark backport** — `ad7f29a` regenerated from a branch that lacked the
-  DSpark line and silently dropped it; repaired by merging DSpark *into the
-  generating branch* and regenerating the union (`8aff1b7`).
-- **Stream-build hunks** — lost to a merge-side resolution inside the patch
-  file; restored by hand in `8f50e57`. Hunk-level losses inside an
-  unchanged file set are invisible to `FILES.txt` — that class is what the
-  `SOURCE.txt` byte-verification catches.
+## Documentation and evidence
 
-**A failing guard means work would be lost.** The fix is always to move the
-work onto the fork branch — never to edit the patch, `FILES.txt` or
-`SOURCE.txt` into agreement.
+- Update `README.md` whenever public runtime behavior, configuration, startup,
+  measured performance, validation status, or a known limitation changes.
+- Preserve historical benchmark and qualification claims unless their exact
+  suites are rerun. New smoke tests do not replace old qualification evidence.
+- Report configured admission, runtime-reported capacity, and exercised
+  context as different facts.
+- Do not commit model files, expert packs, credentials, ad-hoc logs, or local
+  artifact paths. Put reproducible public recipes and concise evidence in the
+  repository; retain bulky raw artifacts outside Git.
 
-## Commit style
+## Repository map
 
-Match `git log`. Subject: declarative, what ships / what changed, no
-prefixes. Body: the why, the evidence (measured numbers, test verdicts),
-and for regens the fork SHA. On the fork branch, upstream-style component
-prefixes are fine (`DCP DSA indexer: …`).
+- `patch/`: sanctioned generated runtime patch and source fingerprints.
+- `scripts/` and `bench/recipes/`: reproducible launch/build configuration.
+- `validation/`: public cases, fixtures, graders, and replay-safe checks.
+- `bench/`: benchmark definitions and published result rendering.
+- `docs/`, `README.md`, `BUILD-AND-RUN.md`, `VALIDATION.md`: public behavior,
+  architecture, operation, provenance, and claim boundaries.
+- `kernels/`: MoET kernel sources, generated cubins, and manifests.
+
+Commit messages should state what changed, why, the exact runtime SHA for a
+patch regeneration, and the focused validation evidence.

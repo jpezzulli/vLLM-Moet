@@ -45,6 +45,69 @@ and FP8 MLA KV. The final launcher uses DSpark-4, four sequences, 2,048 maximum
 batched tokens, DeepGEMM, `--gpu-memory-utilization 0.974`, and
 `--max-model-len 1000000`.
 
+## Verified cache-backed startup
+
+The launcher uses MoET's existing persistent formats as one matched cache
+set: the per-layer base/planes cache contains the runtime-ready 2-bit planes
+and scales, while the pack store contains the FP4 correction rows. On a
+compatible hit, the checkpoint loader skips the corresponding native MXFP4
+expert payloads and four workers load at most 12 completed plane layers per
+batch directly into their final GPU or canonical mapped-host destinations.
+It performs no FP4-to-2-bit projection and no W2 reconstruction at startup.
+
+Eligibility is deliberately cheap and fail closed: checkpoint/cache key,
+quantizer ABI and zero mode, TP rank, exact geometry, layer coverage, sidecar,
+and exact file sizes. Payload packs are not hashed or scanned. A missing,
+partial, stale, or incompatible layer follows the normal checkpoint-source
+construction path and is atomically republished into the existing formats.
+
+The August 9, 2026 hardware run measured:
+
+| Startup phase | Result |
+|---|---:|
+| Cache eligibility | 46 layers in **0.045 s** |
+| Base/planes reads | **77.625 GiB** in five batches, **55.898 s** |
+| Remaining target checkpoint loading | **9.20 s** |
+| DSpark checkpoint loading | **3.84 s** |
+| Total model loading | **89.011 s** |
+| CUDA/DSpark graph capture | **3 s** |
+| Engine profile, KV creation, and warm-up | **19.02 s** |
+| Service start to ready | **130 s** |
+
+The prior comparable model-load baseline was **309.302 s**, so direct cache
+loading reduced that phase by **220.291 s (71.2%)**. The correction pack is
+opened after its sidecar/geometry check and supplies rows lazily; it is not
+bulk-read into a second host representation during startup.
+
+To regenerate a clean cache, stop all writers, empty only the configured MoET
+cache directory, then start this same launcher once. That source-construction
+run creates one cache-keyed planes directory and one matching delta pack.
+Subsequent starts select the direct path automatically.
+
+## Runtime maintenance
+
+The August 9, 2026 runtime tip also incorporates narrowly adapted upstream
+vLLM repairs:
+
+- packed DeepSeek-V4 KV-block zeroing from vLLM commit `d6af803` / PR #50276;
+- structured output with speculative decoding from merged PRs #44297 and
+  #44993;
+- server-side strict structural tool calling adapted from PR #49885.
+
+MoET-specific integration in this fork preserves nested DeepSeek DSML objects,
+enables the strict override without mutating requests, and adds the direct
+planes-plus-delta startup path described above. The final compatibility guard
+limits that direct path to the native MXFP4 builder used by this recipe. The
+production launcher sets
+`VLLM_ENFORCE_STRICT_TOOL_CALLING=true`; non-strict auto-tool schemas therefore
+receive structural grammar containment while keeping open nested argument
+objects valid.
+
+An observed xgrammar stop-boundary warning under strict structured output plus
+DSpark remains a qualification limitation. The focused smoke request completed
+with a valid tool call and no parser exception, but the historical full quality
+suites were not rerun for this maintenance change.
+
 ## Why it matters
 
 Moving five complete W2 layers to CUDA-mapped, NUMA-local host memory frees
@@ -122,7 +185,7 @@ container.
 
 - `scripts/` — pinned native build, final production launcher, and API validation
 - `bench/recipes/` — machine-readable serving recipes and historical benchmark matrix
-- `patch/` — sanctioned generated patch for current runtime `a2131dd7`
+- `patch/` — sanctioned generated patch for runtime `e89479ec2`
 - `kernels/` — Kacper's SM120 SASS, generated cubins, and manifests
 - `container/` and `Containerfile.ds4flash-0731-sm120` — historical OCI v4
   material, reproduced exactly from tag `history/oci-v4-20260802`

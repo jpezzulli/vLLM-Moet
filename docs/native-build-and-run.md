@@ -3,7 +3,7 @@
 > **Superseded reproduction record:** this page preserves the earlier
 > generated-patch, three-layer DSpark-3 build. The preferred final native path
 > is [BUILD-AND-RUN.md](../BUILD-AND-RUN.md), pinned to the hardware-validated
-> a2131 runtime.
+> `e89479ec2` runtime.
 
 This procedure builds a native editable vLLM checkout from the generated
 vLLM-MoET patch. It does not build or validate a container.

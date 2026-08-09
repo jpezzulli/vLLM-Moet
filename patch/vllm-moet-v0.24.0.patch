@@ -432,10 +432,10 @@ index 000000000..9901d1c96
 +        abort.assert_called_once_with(40)
 diff --git a/tests/model_executor/layers/test_moe_w2_persistence.py b/tests/model_executor/layers/test_moe_w2_persistence.py
 new file mode 100644
-index 000000000..31f9f62f6
+index 000000000..b4155cc7f
 --- /dev/null
 +++ b/tests/model_executor/layers/test_moe_w2_persistence.py
-@@ -0,0 +1,569 @@
+@@ -0,0 +1,688 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +
@@ -453,6 +453,7 @@ index 000000000..31f9f62f6
 +from vllm.model_executor.layers.quantization.utils import (
 +    moe_w2_cubit,
 +    moe_w2_delta,
++    moe_w2_fast_loader,
 +    moe_w2_planes,
 +    moe_w2_planes_cache,
 +    moe_w2_store,
@@ -579,6 +580,124 @@ index 000000000..31f9f62f6
 +        json.dump(meta, f)
 +
 +    assert not moe_w2_store.pack_has_layer("base", 0, 2, 2, 16)
++
++
++def test_plane_cache_file_contract_is_cheap_and_fail_closed(
++    tmp_path, monkeypatch
++):
++    meta = {"cache": "expected"}
++    monkeypatch.setattr(moe_w2_planes_cache, "_rank_dir", lambda: str(tmp_path))
++    monkeypatch.setattr(moe_w2_planes_cache, "_meta", lambda: meta)
++    monkeypatch.setenv("VLLM_MOE_W2_PLANES_CACHE", str(tmp_path))
++    with open(tmp_path / "meta.json", "w") as f:
++        json.dump(meta, f)
++    sizes = {"planes13": 8, "sc13": 4}
++    for part, size in sizes.items():
++        (tmp_path / f"layer7.{part}.bin").write_bytes(bytes(size))
++
++    files = moe_w2_planes_cache.cache_layer_files(7, sizes)
++    assert files is not None
++    assert set(files) == set(sizes)
++    (tmp_path / "layer7.sc13.bin").write_bytes(b"bad")
++    assert moe_w2_planes_cache.cache_layer_files(7, sizes) is None
++
++
++def test_direct_plane_loader_batches_without_projection(tmp_path):
++    sizes = {"planes13": 8, "sc13": 4, "planes2": 6, "sc2": 2}
++    loader = moe_w2_fast_loader.DirectPlaneBatchLoader(
++        workers=2, batch_layers=2)
++    for key in range(3):
++        files = {}
++        for part, size in sizes.items():
++            path = tmp_path / f"layer{key}.{part}.bin"
++            path.write_bytes(bytes([key + 1]) * size)
++            files[part] = str(path)
++        loader.add_layer(key, files, sizes)
++
++    for key in range(3):
++        cached = loader.take(key)
++        assert set(cached) == set(sizes)
++        assert all(
++            torch.equal(value, torch.full_like(value, key + 1))
++            for value in cached.values()
++        )
++        loader.release_consumed(key)
++    assert [event["layers"] for event in loader.batch_events] == [[0, 1], [2]]
++    assert all(event["workers"] == 2 for event in loader.batch_events)
++    loader.close()
++
++
++def test_direct_cache_plan_requires_matching_delta_and_stubs_all(
++    tmp_path, monkeypatch
++):
++    monkeypatch.setenv("VLLM_MOE_W2", "1")
++    monkeypatch.setenv("VLLM_MOE_W2_FAST_LOAD", "1")
++    monkeypatch.setenv("VLLM_MOE_W2_NUM_LAYERS", "2")
++    monkeypatch.setattr(moe_w2_delta, "base_enabled", lambda: False)
++    monkeypatch.setattr(moe_w2_delta, "enabled", lambda: True)
++    monkeypatch.setattr(moe_w2_delta, "split_enabled", lambda: False)
++    monkeypatch.setattr(
++        moe_w2_planes_cache,
++        "cache_layer_files",
++        lambda _idx, sizes: {
++            part: str(tmp_path / f"{part}.bin") for part in sizes
++        },
++    )
++    monkeypatch.setattr(moe_w2_store, "pack_has_layer", lambda *args: True)
++    moe_w2_cubit._n_created = 0
++    moe_w2_cubit._cutoff_cache = None
++    moe_w2_cubit._fast_loader = None
++
++    def make_layer():
++        layer = _contract_layer(layer_name="model.layers.0.mlp.experts")
++        layer.w13_weight = torch.nn.Parameter(
++            torch.zeros(2, 16, 32, dtype=torch.uint8), requires_grad=False)
++        layer.w13_weight_scale = torch.nn.Parameter(
++            torch.zeros(2, 16, 2, dtype=torch.uint8), requires_grad=False)
++        layer.w2_weight = torch.nn.Parameter(
++            torch.zeros(2, 16, 32, dtype=torch.uint8), requires_grad=False)
++        layer.w2_weight_scale = torch.nn.Parameter(
++            torch.zeros(2, 16, 2, dtype=torch.uint8), requires_grad=False)
++        for name in ("w13_weight", "w13_weight_scale", "w2_weight",
++                     "w2_weight_scale"):
++            getattr(layer, name).weight_loader = lambda *_a, **_k: None
++        return layer
++
++    hit = make_layer()
++    assert moe_w2_cubit.plan_pack_skip(hit, allow_direct_delta=True)
++    assert hit._moe_w2_direct_cache
++    assert all(
++        getattr(hit, name).numel() == 0
++        for name in ("w13_weight", "w13_weight_scale", "w2_weight",
++                     "w2_weight_scale")
++    )
++
++    moe_w2_cubit._n_created = 0
++    moe_w2_cubit._fast_loader.close()
++    moe_w2_cubit._fast_loader = None
++    monkeypatch.setattr(moe_w2_store, "pack_has_layer", lambda *args: False)
++    miss = make_layer()
++    assert not moe_w2_cubit.plan_pack_skip(miss, allow_direct_delta=True)
++    assert miss.w13_weight.numel() > 0
++
++
++def test_fast_generation_uses_planes_cache_plus_separate_delta(
++    monkeypatch,
++):
++    monkeypatch.setenv("VLLM_MOE_W2_FAST_LOAD", "1")
++    monkeypatch.setenv("VLLM_MOE_W2_STORE_DIR", "/cache")
++    monkeypatch.setattr(moe_w2_delta, "enabled", lambda: True)
++    monkeypatch.setattr(moe_w2_delta, "base_enabled", lambda: False)
++    monkeypatch.setattr(moe_w2_delta, "split_enabled", lambda: False)
++    tensors = [torch.zeros(1, dtype=torch.uint8) for _ in range(6)]
++    parts = moe_w2_cubit._planes_cache_parts(
++        *tensors, allow_separate_delta=True)
++    assert set(parts) == {"planes13", "sc13", "planes2", "sc2"}
++
++    compatible = moe_w2_cubit._planes_cache_parts(*tensors)
++    assert set(compatible) == {
++        "planes13", "sc13", "planes2", "sc2", "fp13", "fp2"
++    }
 +
 +
 +def test_concurrent_pack_writers_merge_layer_manifest(tmp_path, monkeypatch):
@@ -1005,6 +1124,483 @@ index 000000000..31f9f62f6
 +    replay_b = graph_out.clone()
 +    torch.cuda.synchronize()
 +    assert torch.equal(replay_a, replay_b)
+diff --git a/tests/tool_parsers/test_deepseekv4_tool_parser.py b/tests/tool_parsers/test_deepseekv4_tool_parser.py
+index 80e3357b6..55284f373 100644
+--- a/tests/tool_parsers/test_deepseekv4_tool_parser.py
++++ b/tests/tool_parsers/test_deepseekv4_tool_parser.py
+@@ -303,6 +303,166 @@ def test_extract_tool_calls_arguments_wrapper():
+     assert args == {"location": "Beijing"}
+ 
+ 
++def _deferred_bridge_tool() -> ChatCompletionToolsParam:
++    return ChatCompletionToolsParam(
++        type="function",
++        function={
++            "name": "tool_call",
++            "description": "Invoke a deferred tool by name with the given arguments.",
++            "parameters": {
++                "type": "object",
++                "properties": {
++                    "name": {"type": "string"},
++                    "arguments": {"type": "object"},
++                },
++                "required": ["name", "arguments"],
++            },
++        },
++    )
++
++
++def _deferred_bridge_output() -> str:
++    return (
++        f"{TC_START}\n"
++        f'{INV_START}tool_call">\n'
++        f'{PARAM_START}name" string="true">'
++        f"deferred_inventory_lookup{PARAM_END}\n"
++        f'{PARAM_START}arguments" string="false">\n'
++        f'{PARAM_START}sku" string="true">BRIDGE-731{PARAM_END}\n'
++        f'{PARAM_START}include_location" string="false">true{PARAM_END}\n'
++        f"{PARAM_END}\n"
++        f"{INV_END}\n"
++        f"{TC_END}"
++    )
++
++
++def _nested_deferred_bridge_output() -> str:
++    return (
++        f"{TC_START}\n"
++        f'{INV_START}tool_call">\n'
++        f'{PARAM_START}name" string="true">'
++        f"deferred_inventory_lookup{PARAM_END}\n"
++        f'{PARAM_START}arguments" string="false">\n'
++        f'{PARAM_START}sku" string="true">BRIDGE-731{PARAM_END}\n'
++        f'{PARAM_START}filters" string="false">\n'
++        f'{PARAM_START}warehouse" string="true">east{PARAM_END}\n'
++        f'{PARAM_START}limits" string="false">\n'
++        f'{PARAM_START}minimum" string="false">2{PARAM_END}\n'
++        f"{PARAM_END}\n"
++        f"{PARAM_END}\n"
++        f"{PARAM_END}\n"
++        f"{INV_END}\n"
++        f"{TC_END}"
++    )
++
++
++def test_extract_nested_open_object_for_deferred_bridge():
++    tool = _deferred_bridge_tool()
++    parser = make_parser(tools=[tool])
++
++    result = parser.extract_tool_calls(_deferred_bridge_output(), make_request([tool]))
++
++    assert result.tools_called
++    assert len(result.tool_calls) == 1
++    assert result.tool_calls[0].function.name == "tool_call"
++    assert json.loads(result.tool_calls[0].function.arguments) == {
++        "name": "deferred_inventory_lookup",
++        "arguments": {"sku": "BRIDGE-731", "include_location": True},
++    }
++
++
++def test_extract_empty_open_object_for_deferred_bridge():
++    tool = _deferred_bridge_tool()
++    parser = make_parser(tools=[tool])
++    model_output = (
++        f"{TC_START}\n"
++        f'{INV_START}tool_call">\n'
++        f'{PARAM_START}name" string="true">'
++        f"deferred_inventory_lookup{PARAM_END}\n"
++        f'{PARAM_START}arguments" string="false">{PARAM_END}\n'
++        f"{INV_END}\n"
++        f"{TC_END}"
++    )
++
++    result = parser.extract_tool_calls(model_output, make_request([tool]))
++
++    assert json.loads(result.tool_calls[0].function.arguments) == {
++        "name": "deferred_inventory_lookup",
++        "arguments": {},
++    }
++
++
++def test_extract_deeply_nested_open_object_for_deferred_bridge():
++    tool = _deferred_bridge_tool()
++    parser = make_parser(tools=[tool])
++
++    result = parser.extract_tool_calls(
++        _nested_deferred_bridge_output(), make_request([tool])
++    )
++
++    assert json.loads(result.tool_calls[0].function.arguments) == {
++        "name": "deferred_inventory_lookup",
++        "arguments": {
++            "sku": "BRIDGE-731",
++            "filters": {"warehouse": "east", "limits": {"minimum": 2}},
++        },
++    }
++
++
++@pytest.mark.parametrize("chunk_size", [1, 5, 17, 64])
++def test_streaming_nested_open_object_for_deferred_bridge(chunk_size: int):
++    tool = _deferred_bridge_tool()
++    parser = make_parser(tools=[tool])
++
++    deltas = stream(parser, _deferred_bridge_output(), chunk_size=chunk_size)
++    arguments = reconstruct_args(deltas)
++
++    assert json.loads(arguments) == {
++        "name": "deferred_inventory_lookup",
++        "arguments": {"sku": "BRIDGE-731", "include_location": True},
++    }
++    assert "DSML" not in arguments
++    names = [
++        tool_call.function.name
++        for delta in deltas
++        for tool_call in delta.tool_calls or []
++        if tool_call.function and tool_call.function.name
++    ]
++    content = "".join(delta.content or "" for delta in deltas)
++    assert names == ["tool_call"]
++    assert "DSML" not in content
++    assert "R0TURN" not in content
++    assert parser.prev_tool_call_arr == [
++        {
++            "name": "tool_call",
++            "arguments": {
++                "name": "deferred_inventory_lookup",
++                "arguments": {"sku": "BRIDGE-731", "include_location": True},
++            },
++        }
++    ]
++    assert not parser._in_tool_calls
++    assert parser._active_tool_index is None
++    assert parser._buffer == ""
++
++
++def test_streaming_deeply_nested_open_object_for_deferred_bridge():
++    tool = _deferred_bridge_tool()
++    parser = make_parser(tools=[tool])
++
++    deltas = stream(parser, _nested_deferred_bridge_output(), chunk_size=1)
++
++    assert json.loads(reconstruct_args(deltas)) == {
++        "name": "deferred_inventory_lookup",
++        "arguments": {
++            "sku": "BRIDGE-731",
++            "filters": {"warehouse": "east", "limits": {"minimum": 2}},
++        },
++    }
++    assert not parser._in_tool_calls
++    assert parser._active_tool_index is None
++
++
+ @pytest.mark.skip_global_cleanup
+ def test_composed_schema_converts_object_and_array_params():
+     tool = ChatCompletionToolsParam(
+diff --git a/tests/tool_parsers/test_structural_tag_registry.py b/tests/tool_parsers/test_structural_tag_registry.py
+index bd84b2cbb..8bfb47e72 100644
+--- a/tests/tool_parsers/test_structural_tag_registry.py
++++ b/tests/tool_parsers/test_structural_tag_registry.py
+@@ -5,7 +5,10 @@ from types import SimpleNamespace
+ from unittest.mock import MagicMock
+ 
+ import pytest
+-from xgrammar import StructuralTag
++from openai.types.responses import FunctionTool
++from xgrammar import Grammar, StructuralTag
++from xgrammar.structural_tag import TagsWithSeparatorFormat, TriggeredTagsFormat
++from xgrammar.testing import _is_grammar_accept_string
+ 
+ from vllm.entrypoints.openai.chat_completion.protocol import (
+     ChatCompletionNamedFunction,
+@@ -116,9 +119,10 @@ def test_get_model_structural_tag_supports_vllm_hermes(
+                             "type": "object",
+                             "properties": {"city": {"type": "string"}},
+                             "required": ["city"],
++                            },
++                            "style": "json",
++                            "any_order": False,
+                         },
+-                        "style": "json",
+-                    },
+                     "end": "}\n</tool_call>",
+                 },
+                 {
+@@ -130,9 +134,10 @@ def test_get_model_structural_tag_supports_vllm_hermes(
+                             "type": "object",
+                             "properties": {"city": {"type": "string"}},
+                             "required": ["city"],
++                            },
++                            "style": "json",
++                            "any_order": False,
+                         },
+-                        "style": "json",
+-                    },
+                     "end": "}</tool_call>",
+                 },
+             ],
+@@ -346,3 +351,235 @@ def test_get_function_parameters_relaxes_function_strict_false():
+     )
+ 
+     assert _get_function_parameters(function) is True
++
++
++class TestEnforceStrictToolCalling:
++    """Server override behavior for structural-tag based tool calling."""
++
++    @pytest.fixture
++    def dumped_tools(self, monkeypatch: pytest.MonkeyPatch):
++        """Capture the tool dicts handed to xgrammar."""
++        captured: list[list[dict]] = []
++
++        def fake_get_xgrammar_model_structural_tag(*, tools: list[dict], **kwargs):
++            captured.append(tools)
++            return MagicMock(spec=StructuralTag)
++
++        monkeypatch.setattr(
++            "vllm.tool_parsers.structural_tag_registry."
++            "get_xgrammar_model_structural_tag",
++            fake_get_xgrammar_model_structural_tag,
++        )
++        return captured
++
++    @pytest.mark.parametrize(
++        ("value", "request_strict", "expect_tag"),
++        [
++            (None, False, False),
++            (None, True, True),
++            ("true", False, True),
++            ("false", True, False),
++        ],
++    )
++    def test_auto_follows_explicit_server_override(
++        self,
++        monkeypatch: pytest.MonkeyPatch,
++        sample_tools: list[ChatCompletionToolsParam],
++        sample_tools_strict: list[ChatCompletionToolsParam],
++        value: str | None,
++        request_strict: bool,
++        expect_tag: bool,
++    ):
++        if value is None:
++            monkeypatch.delenv("VLLM_ENFORCE_STRICT_TOOL_CALLING", raising=False)
++        else:
++            monkeypatch.setenv("VLLM_ENFORCE_STRICT_TOOL_CALLING", value)
++        tools = sample_tools_strict if request_strict else sample_tools
++        request = ChatCompletionRequest(
++            messages=[], model="test-model", tools=tools, tool_choice="auto"
++        )
++        parser = Qwen3EngineToolParser(MagicMock(), tools=tools)
++
++        tag = parser.get_structural_tag(request)
++
++        assert (tag is not None) is expect_tag
++
++    def test_force_strict_overrides_tools_without_mutating_request(
++        self,
++        dumped_tools: list[list[dict]],
++        sample_tools: list[ChatCompletionToolsParam],
++    ):
++        explicitly_relaxed = ChatCompletionToolsParam(
++            type="function",
++            function={
++                "name": "get_time",
++                "strict": False,
++                "parameters": {"type": "object", "properties": {}},
++            },
++        )
++        responses_tool = FunctionTool(
++            type="function",
++            name="get_location",
++            strict=False,
++            parameters={"type": "object", "properties": {}},
++        )
++        tools = [*sample_tools, explicitly_relaxed, responses_tool]
++
++        get_model_structural_tag(
++            model="llama",
++            tools=tools,
++            tool_choice="auto",
++            reasoning=False,
++            force_strict=True,
++        )
++
++        assert dumped_tools[0][0]["function"]["strict"] is True
++        assert dumped_tools[0][1]["function"]["strict"] is True
++        assert dumped_tools[0][2]["function"]["strict"] is True
++        assert sample_tools[0].function.strict is None
++        assert explicitly_relaxed.function.strict is False
++        assert responses_tool.strict is False
++
++    @pytest.mark.parametrize(
++        ("value", "expected_support"),
++        [(None, False), ("true", False), ("false", True)],
++    )
++    def test_parser_routing_follows_explicit_server_override(
++        self,
++        monkeypatch: pytest.MonkeyPatch,
++        value: str | None,
++        expected_support: bool,
++    ):
++        if value is None:
++            monkeypatch.delenv("VLLM_ENFORCE_STRICT_TOOL_CALLING", raising=False)
++        else:
++            monkeypatch.setenv("VLLM_ENFORCE_STRICT_TOOL_CALLING", value)
++
++        class TestParser(ToolParser):
++            structural_tag_model = "llama"
++
++        assert TestParser.supports_required_and_named is expected_support
++
++    def test_force_strict_keeps_text_response_allowed_under_auto(
++        self,
++        sample_tools: list[ChatCompletionToolsParam],
++    ):
++        auto_tag = get_model_structural_tag(
++            model="hermes",
++            tools=sample_tools,
++            tool_choice="auto",
++            reasoning=False,
++            force_strict=True,
++        )
++        required_tag = get_model_structural_tag(
++            model="hermes",
++            tools=sample_tools,
++            tool_choice="required",
++            reasoning=False,
++            force_strict=True,
++        )
++
++        assert auto_tag is not None
++        assert required_tag is not None
++        assert isinstance(auto_tag.format, TriggeredTagsFormat)
++        assert isinstance(required_tag.format, TagsWithSeparatorFormat)
++
++    def test_force_strict_supports_parallel_tool_calls(
++        self,
++        sample_tools: list[ChatCompletionToolsParam],
++    ):
++        tools = sample_tools + [
++            ChatCompletionToolsParam(
++                type="function",
++                function={
++                    "name": "get_time",
++                    "parameters": {
++                        "type": "object",
++                        "properties": {"tz": {"type": "string"}},
++                    },
++                },
++            )
++        ]
++
++        tag = get_model_structural_tag(
++            model="hermes",
++            tools=tools,
++            tool_choice="auto",
++            reasoning=False,
++            force_strict=True,
++        )
++
++        assert isinstance(tag, StructuralTag)
++        rendered = str(tag)
++        assert "get_weather" in rendered
++        assert "get_time" in rendered
++
++    def test_force_strict_compiles_hermes_tool_call_bridge(self):
++        """Hermes's captured open arguments object compiles for DeepSeek V4."""
++        tool = ChatCompletionToolsParam(
++            type="function",
++            function={
++                "name": "tool_call",
++                "description": (
++                    "Invoke a deferred tool by name with the given arguments. "
++                    "Argument shape matches the tool's schema (see `tool_describe`). "
++                    "Policy, hooks, and approvals run exactly as for any "
++                    "directly-listed tool."
++                ),
++                "parameters": {
++                    "type": "object",
++                    "properties": {
++                        "name": {
++                            "type": "string",
++                            "description": "Exact tool name to invoke.",
++                        },
++                        "arguments": {
++                            "type": "object",
++                            "description": (
++                                "Arguments for the tool, matching its schema."
++                            ),
++                        },
++                    },
++                    "required": ["name", "arguments"],
++                },
++            },
++        )
++        request = ChatCompletionRequest(
++            messages=[], model="pennyroyal", tools=[tool], tool_choice="auto"
++        )
++        parser = DeepSeekV4ToolParser.__new__(DeepSeekV4ToolParser)
++
++        with pytest.MonkeyPatch.context() as monkeypatch:
++            monkeypatch.setenv("VLLM_ENFORCE_STRICT_TOOL_CALLING", "true")
++            tag = parser.get_structural_tag(request)
++
++        assert isinstance(tag, StructuralTag)
++        assert isinstance(tag.format, TriggeredTagsFormat)
++        grammar = Grammar.from_structural_tag(tag)
++        assert grammar is not None
++        valid = (
++            '<｜DSML｜tool_calls>\n<｜DSML｜invoke name="tool_call">\n'
++            '<｜DSML｜parameter name="name" string="true">'
++            "deferred_inventory_lookup</｜DSML｜parameter>"
++            '<｜DSML｜parameter name="arguments" string="false">'
++            '<｜DSML｜parameter name="sku" string="true">'
++            "BRIDGE-731</｜DSML｜parameter>"
++            '<｜DSML｜parameter name="include_location" string="false">'
++            "true</｜DSML｜parameter>"
++            "</｜DSML｜parameter></｜DSML｜invoke>\n"
++            "</｜DSML｜tool_calls>"
++        )
++        invalid_outer_field = valid.replace(
++            "</｜DSML｜invoke>",
++            '<｜DSML｜parameter name="include_location" string="false">'
++            "true</｜DSML｜parameter></｜DSML｜invoke>",
++        )
++        assert _is_grammar_accept_string(grammar, valid)
++        assert not _is_grammar_accept_string(grammar, invalid_outer_field)
++        assert tool.function.strict is None
++        assert tool.function.parameters is not None
++        arguments = tool.function.parameters["properties"]["arguments"]
++        assert arguments == {
++            "type": "object",
++            "description": "Arguments for the tool, matching its schema.",
++        }
+diff --git a/tests/v1/core/test_async_scheduler.py b/tests/v1/core/test_async_scheduler.py
+index 5e9c9280d..8253a8422 100644
+--- a/tests/v1/core/test_async_scheduler.py
++++ b/tests/v1/core/test_async_scheduler.py
+@@ -272,6 +272,9 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
+     scheduler.connector = None
+     scheduler.structured_output_manager = Mock()
+     scheduler.structured_output_manager.should_advance.return_value = True
++    scheduler.structured_output_manager.trim_reasoning_for_advance.side_effect = (
++        lambda request, new_token_ids: new_token_ids
++    )
+     scheduler.requests = {request.request_id: request}
+     scheduler.running = [request]
+     scheduler.waiting = Mock()
+diff --git a/tests/v1/core/test_scheduler.py b/tests/v1/core/test_scheduler.py
+index dcfbfd5b1..43141bada 100644
+--- a/tests/v1/core/test_scheduler.py
++++ b/tests/v1/core/test_scheduler.py
+@@ -2777,6 +2777,9 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
+     scheduler.connector = None
+     scheduler.structured_output_manager = Mock()
+     scheduler.structured_output_manager.should_advance.return_value = True
++    scheduler.structured_output_manager.trim_reasoning_for_advance.side_effect = (
++        lambda request, new_token_ids: new_token_ids
++    )
+     scheduler.requests = {request.request_id: request}
+     scheduler.running = [request]
+     scheduler.waiting = Mock()
 diff --git a/tests/v1/spec_decode/test_dspark_scheduler.py b/tests/v1/spec_decode/test_dspark_scheduler.py
 new file mode 100644
 index 000000000..34b0d7861
@@ -1053,6 +1649,583 @@ index 000000000..34b0d7861
 +    # Calibrated scores are [0.9, .08, 1.4, 1.2]; cummin projects them to
 +    # [.9, .08, .08, .08], so the threshold cannot select a disjoint tail.
 +    assert torch.equal(widths, torch.tensor([1], dtype=torch.int32))
+diff --git a/tests/v1/spec_decode/test_mtp_structured_output.py b/tests/v1/spec_decode/test_mtp_structured_output.py
+new file mode 100644
+index 000000000..619f3ad6f
+--- /dev/null
++++ b/tests/v1/spec_decode/test_mtp_structured_output.py
+@@ -0,0 +1,343 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""grammar_bitmask under spec-decode draft padding (#44006)."""
++
++import pytest
++from transformers import AutoTokenizer
++
++from vllm.config import StructuredOutputsConfig, VllmConfig
++from vllm.config.model import ModelConfig
++from vllm.config.speculative import SpeculativeConfig
++from vllm.sampling_params import SamplingParams, StructuredOutputsParams
++from vllm.v1.request import Request
++from vllm.v1.structured_output import StructuredOutputManager
++
++TOKENIZER = "gpt2"
++NUM_SPEC_TOKENS = 4
++
++
++def _make_manager_and_request(backend: str, prompt_str: str = '{"a": "b"}'):
++    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER)
++    prompt = tokenizer.encode(prompt_str)
++
++    vllm_config = VllmConfig(
++        model_config=ModelConfig(tokenizer=TOKENIZER),
++        structured_outputs_config=StructuredOutputsConfig(backend=backend),
++        speculative_config=SpeculativeConfig(
++            model="[ngram]", num_speculative_tokens=NUM_SPEC_TOKENS
++        ),
++    )
++    manager = StructuredOutputManager(vllm_config)
++
++    sampling_params = SamplingParams(
++        structured_outputs=StructuredOutputsParams(json='{"type": "object"}'),
++    )
++    sampling_params.structured_outputs._backend = backend
++    sampling_params.update_from_generation_config({}, tokenizer.eos_token_id)
++
++    request = Request(
++        "mtp_req",
++        prompt_token_ids=prompt,
++        sampling_params=sampling_params,
++        pooling_params=None,
++    )
++    manager.grammar_init(request)
++    while not request.structured_output_request._check_grammar_completion():
++        continue
++
++    return tokenizer, manager, request, prompt
++
++
++@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
++def test_bitmask_with_padded_invalid_drafts(backend):
++    """Bitmask handles -1 padded drafts and returns N+1 rows."""
++    tokenizer, manager, request, prompt = _make_manager_and_request(
++        backend, prompt_str='{"a"'
++    )
++    grammar = request.structured_output_request.grammar
++
++    assert grammar.accept_tokens(request.request_id, prompt)
++
++    valid_drafts = [tokenizer.encode(":")[0], tokenizer.encode(' "')[0]]
++    padded = valid_drafts + [-1, -1]
++
++    bitmask = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: padded},
++    )
++
++    assert bitmask is not None
++    assert bitmask.shape[0] == len(padded) + 1
++    assert not grammar.is_terminated()
++
++
++@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
++def test_bitmask_when_grammar_terminates_mid_window(backend):
++    """Drafts following an EOS that terminates the grammar are a no-op."""
++    tokenizer, manager, request, prompt = _make_manager_and_request(backend)
++    grammar = request.structured_output_request.grammar
++
++    assert grammar.accept_tokens(request.request_id, prompt)
++    eos = tokenizer.eos_token_id
++    drafts = [eos] + [tokenizer.encode(" ")[0]] * (NUM_SPEC_TOKENS - 1)
++
++    bitmask = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++
++    assert bitmask is not None
++    assert bitmask.shape[0] == NUM_SPEC_TOKENS + 1
++    assert not grammar.is_terminated()
++
++
++@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
++def test_bitmask_idempotent_across_calls(backend):
++    """Repeated calls with the same input return the same bitmask."""
++    tokenizer, manager, request, prompt = _make_manager_and_request(
++        backend, prompt_str='{"a"'
++    )
++    grammar = request.structured_output_request.grammar
++
++    assert grammar.accept_tokens(request.request_id, prompt)
++
++    drafts = [tokenizer.encode(":")[0], -1, -1, -1]
++
++    first = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++    second = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++
++    assert first is not None and second is not None
++    assert (first == second).all()
++    assert not grammar.is_terminated()
++
++
++@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
++def test_bonus_position_constrained_after_invalid_drafts(backend):
++    """Regression for #44006: bonus row stays constrained after -1 padding."""
++    tokenizer, manager, request, prompt = _make_manager_and_request(
++        backend, prompt_str='{"a"'
++    )
++    grammar = request.structured_output_request.grammar
++
++    assert grammar.accept_tokens(request.request_id, prompt)
++
++    valid = tokenizer.encode(":")[0]
++    drafts = [valid, -1, -1, -1]
++    bitmask = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++    assert bitmask is not None
++    assert bitmask.shape[0] == len(drafts) + 1
++
++    assert not (bitmask[-1] == -1).all()
++    assert not grammar.is_terminated()
++
++
++@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
++def test_bitmask_constrained_when_reasoning_ends_midwindow(backend):
++    """Drafts after a mid-window reasoning-end marker stay constrained."""
++    tokenizer, manager, request, prompt = _make_manager_and_request(backend)
++    grammar = request.structured_output_request.grammar
++
++    assert grammar.accept_tokens(request.request_id, prompt)
++
++    marker = tokenizer.encode("\n")[0]
++
++    class StubReasoner:
++        def __init__(self, *_, **__):
++            self.end_token_id = marker
++
++        def is_reasoning_end(self, input_ids):
++            return marker in list(input_ids)
++
++        def is_reasoning_end_streaming(self, input_ids, delta_ids):
++            return marker in list(delta_ids)
++
++    manager.reasoner_cls = StubReasoner
++    request.structured_output_request.reasoner = StubReasoner()
++    request.structured_output_request.reasoning_ended = False
++
++    pre = tokenizer.encode(" ")[0]
++    post = tokenizer.encode(",")[0]
++    drafts = [pre, marker, post]
++
++    bitmask = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++
++    assert bitmask is not None
++    assert bitmask.shape[0] == len(drafts) + 1
++    assert (bitmask[0] == -1).all()
++    assert (bitmask[1] == -1).all()
++    assert not (bitmask[2] == -1).all()
++    assert not (bitmask[-1] == -1).all()
++    assert not grammar.is_terminated()
++
++
++@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
++def test_bitmask_post_reasoning_end_drafts_skip_grammar_advance(backend):
++    """Post-marker drafts predate the bitmask and may be grammar-invalid;
++    grammar_bitmask must skip the grammar advance instead of asserting.
++    """
++    tokenizer, manager, request, prompt = _make_manager_and_request(
++        backend, prompt_str="{"
++    )
++    grammar = request.structured_output_request.grammar
++
++    assert grammar.accept_tokens(request.request_id, prompt)
++    assert not grammar.is_terminated()
++
++    marker = tokenizer.encode("\n")[0]
++
++    class StubReasoner:
++        def __init__(self, *_, **__):
++            self.end_token_id = marker
++
++        def is_reasoning_end(self, input_ids):
++            return marker in list(input_ids)
++
++        def is_reasoning_end_streaming(self, input_ids, delta_ids):
++            return marker in list(delta_ids)
++
++    manager.reasoner_cls = StubReasoner
++    request.structured_output_request.reasoner = StubReasoner()
++    request.structured_output_request.reasoning_ended = False
++
++    pre = tokenizer.encode(" ")[0]
++    # A token that the JSON grammar would reject as the first post-marker
++    # token; without the fix grammar.accept_tokens fires the assertion.
++    invalid_post = tokenizer.encode("z")[0]
++    drafts = [pre, marker, invalid_post]
++
++    bitmask = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++
++    assert bitmask is not None
++    assert bitmask.shape[0] == len(drafts) + 1
++    # Post-marker position is still bitmask-constrained.
++    assert not (bitmask[2] == -1).all()
++    # Grammar must not have advanced through the unvalidated draft.
++    assert not grammar.is_terminated()
++
++
++@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
++def test_validate_tokens_then_bitmask_round_trip(backend):
++    """validate_tokens -> pad with -1 -> grammar_bitmask must not assert."""
++    tokenizer, manager, request, prompt = _make_manager_and_request(backend)
++    grammar = request.structured_output_request.grammar
++
++    assert grammar.accept_tokens(request.request_id, prompt)
++
++    raw_drafts = [tokenizer.encode(",")[0], 99999, 12345, 67890]
++    accepted = grammar.validate_tokens(raw_drafts)
++    assert len(accepted) <= len(raw_drafts)
++
++    padded = accepted + [-1] * (len(raw_drafts) - len(accepted))
++    assert len(padded) == len(raw_drafts)
++
++    bitmask = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: padded},
++    )
++    assert bitmask is not None
++    assert bitmask.shape[0] == len(padded) + 1
++    assert not grammar.is_terminated()
++
++
++class _MarkerReasoner:
++    """Stub reasoner whose reasoning-end marker is a single fixed token."""
++
++    def __init__(self, marker: int):
++        self.marker = marker
++
++    def is_reasoning_end(self, input_ids):
++        return self.marker in list(input_ids)
++
++    def is_reasoning_end_streaming(self, input_ids, delta_ids):
++        return self.marker in list(delta_ids)
++
++
++def _setup_boundary_request(backend: str):
++    """Request with a structural-tag key and reasoning not yet ended."""
++    from vllm.v1.structured_output.backend_types import StructuredOutputOptions
++
++    tokenizer, manager, request, prompt = _make_manager_and_request(backend)
++    marker = tokenizer.encode("\n")[0]
++    structured_req = request.structured_output_request
++    # The grammar itself is JSON (cheap to build); only the key kind matters
++    # for the should_advance structural-tag branch, so pre-seed the cached
++    # property.
++    structured_req.__dict__["structured_output_key"] = (
++        StructuredOutputOptions.STRUCTURAL_TAG,
++        "",
++    )
++    manager.reasoner_cls = _MarkerReasoner
++    structured_req.reasoner = _MarkerReasoner(marker)
++    structured_req.reasoning_ended = False
++    return tokenizer, manager, request, prompt, marker
++
++
++def test_should_advance_records_reasoning_end_index():
++    """Regression for #44006 on post-#42452 main: the boundary step must
++    record where reasoning ends so the scheduler can trim before advancing.
++    """
++    tokenizer, manager, request, prompt, marker = _setup_boundary_request("xgrammar")
++    structured_req = request.structured_output_request
++
++    pre = tokenizer.encode(" ")[0]
++    post = tokenizer.encode("{")[0]
++    request.append_output_token_ids([pre, marker, post])
++
++    assert manager.should_advance(request)
++    assert structured_req.reasoning_ended
++    # Marker sits at absolute index len(prompt) + 1.
++    assert structured_req.reasoning_end_token_index == len(prompt) + 1
++
++
++def test_trim_reasoning_for_advance():
++    """trim drops the marker and everything before it; later steps and
++    requests without a recorded boundary pass through unchanged.
++    """
++    tokenizer, manager, request, prompt, marker = _setup_boundary_request("xgrammar")
++    structured_req = request.structured_output_request
++
++    pre = tokenizer.encode(" ")[0]
++    post = tokenizer.encode("{")[0]
++
++    # No boundary recorded yet: pass-through.
++    assert manager.trim_reasoning_for_advance(request, [pre]) == [pre]
++
++    # Boundary step: marker mid-step keeps only the suffix.
++    step_tokens = [pre, marker, post]
++    request.append_output_token_ids(step_tokens)
++    assert manager.should_advance(request)
++    assert manager.trim_reasoning_for_advance(request, step_tokens) == [post]
++
++    # Boundary step variant: marker last (the #44006 crash shape
++    # [198, </think>]) trims to empty -> scheduler skips accept_tokens.
++    structured_req.reasoning_end_token_index = len(request.all_token_ids) - 1
++    assert manager.trim_reasoning_for_advance(request, step_tokens) == []
++
++    # Later steps: tokens are past the boundary, returned unchanged.
++    structured_req.reasoning_end_token_index = len(prompt) + 1
++    next_step = [post, post]
++    request.append_output_token_ids(next_step)
++    assert manager.trim_reasoning_for_advance(request, next_step) == next_step
+diff --git a/tests/v1/structured_output/test_reasoning_structured_output.py b/tests/v1/structured_output/test_reasoning_structured_output.py
+index 861e919c1..ad5f1d5d7 100644
+--- a/tests/v1/structured_output/test_reasoning_structured_output.py
++++ b/tests/v1/structured_output/test_reasoning_structured_output.py
+@@ -73,6 +73,7 @@ class TestReasoningStructuredOutput:
+         request.all_token_ids = [1, 2, 3, 4, 5, 6, 7, 8]
+         request.num_computed_tokens = 5
+         request.num_output_placeholders = 0
++        request.request_id = "mock_req"
+         return request
+ 
+     @pytest.fixture
+@@ -208,53 +209,144 @@ class TestReasoningStructuredOutput:
+             mock_request_with_structured_output
+         )
+ 
+-        # Should set reasoning_ended to True but return False for this step
++        # The scheduler trims the reasoning prefix before advancing the grammar.
+         assert (
+             mock_request_with_structured_output.structured_output_request.reasoning_ended
+             is True
+         )
+-        assert result is False
++        assert result is True
+ 
+-    def test_should_advance_reasoning_just_ended_with_spec_decode_structural_tag(
++    def test_should_advance_reasoning_already_ended(
+         self,
+         manager_with_reasoner,
+         mock_request_with_structured_output,
+     ):
+-        """When reasoning ends this step, advance immediately for structural
+-        tags with speculative decoding."""
++        """Test should_advance when reasoning has already ended."""
++        # Set reasoning as already ended
++        (
++            mock_request_with_structured_output.structured_output_request
++        ).reasoning_ended = True
++
++        result = manager_with_reasoner.should_advance(
++            mock_request_with_structured_output
++        )
++
++        # Should return True since reasoning has ended
++        assert result is True
++
++    def test_should_advance_uses_new_token_ids_when_provided(
++        self,
++        manager_with_reasoner,
++        mock_request_with_structured_output,
++    ):
++        """Regression for #43388: when caller passes new_token_ids, the
++        reasoner sees the exact multi-token delta rather than the
++        placeholder-derived window.
++        """
+         structured_req = mock_request_with_structured_output.structured_output_request
+         structured_req.reasoning_ended = False
+-        structured_req.structured_output_key = (
+-            StructuredOutputOptions.STRUCTURAL_TAG,
+-            "{}",
+-        )
++
++        end_token_id = 248069
++
+         reasoner = MockReasoner(tokenizer=Mock())
+-        reasoner.is_reasoning_end_streaming.return_value = True
++        # Detection mirrors the real Qwen3 parser: end token in the delta.
++        reasoner.is_reasoning_end_streaming = Mock(
++            side_effect=lambda input_ids, delta_ids: end_token_id in list(delta_ids)
++        )
+         structured_req.reasoner = reasoner
+ 
+-        manager_with_reasoner.vllm_config.speculative_config = Mock()
++        # Scenario from #43388: async + spec decode K=4, 4 tokens accepted
++        # but only 1 placeholder remains (some drafts were rejected).
++        # The placeholder math would yield delta=[271] and miss </think>.
++        # Passing new_token_ids must override that.
++        new_token_ids = [9, 198, end_token_id, 271]
++        mock_request_with_structured_output.all_token_ids = [
++            1,
++            2,
++            3,
++            4,
++            5,
++        ] + new_token_ids
++        mock_request_with_structured_output.num_computed_tokens = 9
++        mock_request_with_structured_output.num_output_placeholders = 1
+ 
+         result = manager_with_reasoner.should_advance(
+-            mock_request_with_structured_output
++            mock_request_with_structured_output,
++            new_token_ids=new_token_ids,
+         )
+ 
++        # First call to is_reasoning_end_streaming was with the full
++        # new_token_ids (not the truncated placeholder window).
++        first_call = reasoner.is_reasoning_end_streaming.call_args_list[0]
++        _, called_delta = first_call.args
++        assert list(called_delta) == new_token_ids
++
+         assert structured_req.reasoning_ended is True
+         assert result is True
+ 
+-    def test_should_advance_reasoning_already_ended(
++    def test_should_advance_without_new_token_ids_falls_back(
+         self,
+         manager_with_reasoner,
+         mock_request_with_structured_output,
+     ):
+-        """Test should_advance when reasoning has already ended."""
+-        # Set reasoning as already ended
+-        (
+-            mock_request_with_structured_output.structured_output_request
+-        ).reasoning_ended = True
++        """Backward compat: callers that don't pass new_token_ids keep
++        the original placeholder-derived delta window.
++        """
++        structured_req = mock_request_with_structured_output.structured_output_request
++        structured_req.reasoning_ended = False
++        reasoner = MockReasoner(tokenizer=Mock())
++        reasoner.is_reasoning_end_streaming.return_value = False
++        structured_req.reasoner = reasoner
++
++        mock_request_with_structured_output.all_token_ids = [1, 2, 3, 4, 5]
++        mock_request_with_structured_output.num_computed_tokens = 5
++        mock_request_with_structured_output.num_output_placeholders = 2
+ 
+         result = manager_with_reasoner.should_advance(
+             mock_request_with_structured_output
+         )
+ 
+-        # Should return True since reasoning has ended
++        # placeholder window: start = 5 - 2 = 3, delta = [4, 5]
++        _, called_delta = reasoner.is_reasoning_end_streaming.call_args[0]
++        assert list(called_delta) == [4, 5]
++        assert result is False
++
++    def test_should_advance_trims_reasoning_prefix_for_json(
++        self,
++        manager_with_reasoner,
++        mock_request_with_structured_output,
++    ):
++        """JSON uses the common trim-then-advance path at the boundary."""
++        structured_req = mock_request_with_structured_output.structured_output_request
++        structured_req.reasoning_ended = False
++        structured_req.structured_output_key = (
++            StructuredOutputOptions.JSON_OBJECT,
++            "{}",
++        )
++
++        marker = 248069
++
++        class MarkerReasoner:
++            def __init__(self, *_, **__):
++                pass
++
++            def is_reasoning_end_streaming(self, input_ids, delta_ids):
++                return marker in list(delta_ids)
++
++        structured_req.reasoner = MarkerReasoner()
++
++        new_token_ids = [9, 198, marker, 271, 5005]
++        mock_request_with_structured_output.all_token_ids = [1, 2, 3] + new_token_ids
++
++        result = manager_with_reasoner.should_advance(
++            mock_request_with_structured_output,
++            new_token_ids=new_token_ids,
++        )
++
++        structured_req.grammar.accept_tokens.assert_not_called()
++        assert structured_req.reasoning_ended is True
+         assert result is True
++        assert structured_req.reasoning_end_token_index == 5
++        assert manager_with_reasoner.trim_reasoning_for_advance(
++            mock_request_with_structured_output, new_token_ids
++        ) == [271, 5005]
+diff --git a/tests/v1/worker/test_kv_block_zeroer.py b/tests/v1/worker/test_kv_block_zeroer.py
+new file mode 100644
+index 000000000..fbb52540b
+--- /dev/null
++++ b/tests/v1/worker/test_kv_block_zeroer.py
+@@ -0,0 +1,46 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++import pytest
++import torch
++
++from vllm.v1.worker.utils import KVBlockZeroer
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
++def test_packed_segment_zeros_only_its_last_block_page():
++    """A packed KV segment steps by block stride but clears only its page."""
++    device = torch.device("cuda")
++    num_blocks = 4
++    block_stride_el = 12
++    page_size_el = 4
++    page_offset_el = 3
++    backing = torch.ones(
++        (num_blocks, block_stride_el), dtype=torch.int32, device=device
++    )
++
++    zeroer = KVBlockZeroer.__new__(KVBlockZeroer)
++    zeroer.device = device
++    zeroer.pin_memory = True
++    zeroer._id_cap = 0
++    zeroer._ids_pinned = None
++    zeroer._ids_gpu = None
++    zeroer._meta = (
++        torch.tensor(
++            [backing.data_ptr() + page_offset_el * backing.element_size()],
++            dtype=torch.uint64,
++            device=device,
++        ),
++        torch.tensor([block_stride_el], dtype=torch.int64, device=device),
++        torch.tensor([page_size_el], dtype=torch.int64, device=device),
++        1,
++        page_size_el,
++        1,
++    )
++
++    zeroer.zero_block_ids([num_blocks - 1])
++    torch.accelerator.synchronize()
++
++    expected = torch.ones_like(backing)
++    expected[-1, page_offset_el : page_offset_el + page_size_el] = 0
++    assert torch.equal(backing, expected)
 diff --git a/tools/nvfp4_flashinfer_sm120/README.md b/tools/nvfp4_flashinfer_sm120/README.md
 new file mode 100644
 index 000000000..a147137db
@@ -2108,7 +3281,7 @@ index ba7d26c93..55e8ddaf9 100644
  
      @model_validator(mode="after")
 diff --git a/vllm/envs.py b/vllm/envs.py
-index 27a85bb3d..11eb233f2 100755
+index 27a85bb3d..031568efa 100755
 --- a/vllm/envs.py
 +++ b/vllm/envs.py
 @@ -179,6 +179,9 @@ if TYPE_CHECKING:
@@ -2121,6 +3294,15 @@ index 27a85bb3d..11eb233f2 100755
      VLLM_DEEP_GEMM_WARMUP: Literal[
          "skip",
          "full",
+@@ -204,7 +207,7 @@ if TYPE_CHECKING:
+     MOONCAKE_REQUESTER_LOCAL_HOSTNAME: str | None = None
+     VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE: int = 163840
+     VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS: int = 1
+-    VLLM_ENFORCE_STRICT_TOOL_CALLING: bool = True
++    VLLM_ENFORCE_STRICT_TOOL_CALLING: bool | None = None
+     VLLM_MQ_MAX_CHUNK_BYTES_MB: int = 16
+     VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: int = 300
+     VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS: int = 5
 @@ -1444,6 +1447,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
      "VLLM_USE_DEEP_GEMM_TMA_ALIGNED_SCALES": lambda: bool(
          int(os.getenv("VLLM_USE_DEEP_GEMM_TMA_ALIGNED_SCALES", "1"))
@@ -2138,7 +3320,22 @@ index 27a85bb3d..11eb233f2 100755
      # DeepGemm JITs the kernels on-demand. The warmup attempts to make DeepGemm
      # JIT all the required kernels before model execution so there is no
      # JIT'ing in the hot-path. However, this warmup increases the engine
-@@ -1995,9 +2008,23 @@ def is_set(name: str):
+@@ -1578,9 +1591,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     "VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS": lambda: int(
+         os.getenv("VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS", "1")
+     ),
+-    # Enforce function parameter schemas in structural-tag based tool calling.
++    # Override structural-tag based tool calling. When unset, requests control
++    # strictness through the per-function `strict` field.
+     "VLLM_ENFORCE_STRICT_TOOL_CALLING": lambda: (
+-        os.getenv("VLLM_ENFORCE_STRICT_TOOL_CALLING", "True").lower() in ("true", "1")
++        None
++        if (value := os.getenv("VLLM_ENFORCE_STRICT_TOOL_CALLING")) is None
++        else value.lower() in ("true", "1")
+     ),
+     # Control the max chunk bytes (in MB) for the rpc message queue.
+     # Object larger than this threshold will be broadcast to worker
+@@ -1995,9 +2011,23 @@ def is_set(name: str):
      raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
  
  
@@ -2163,7 +3360,7 @@ index 27a85bb3d..11eb233f2 100755
              if hard_fail:
                  raise ValueError(f"Unknown vLLM environment variable detected: {env}")
              else:
-@@ -2099,6 +2126,14 @@ def compile_factors() -> dict[str, object]:
+@@ -2099,6 +2129,14 @@ def compile_factors() -> dict[str, object]:
  
          factors[factor] = normalize_value(raw)
  
@@ -2565,7 +3762,7 @@ index d51a2dd31..92f7c18fa 100644
                  return UnquantizedLinearMethod()
              return None
 diff --git a/vllm/model_executor/layers/quantization/mxfp4.py b/vllm/model_executor/layers/quantization/mxfp4.py
-index 1b2a8a74b..e025de965 100644
+index 1b2a8a74b..a754087dd 100644
 --- a/vllm/model_executor/layers/quantization/mxfp4.py
 +++ b/vllm/model_executor/layers/quantization/mxfp4.py
 @@ -491,7 +491,8 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
@@ -2578,7 +3775,7 @@ index 1b2a8a74b..e025de965 100644
  
      @property
      def skip_forward_padding(self) -> bool:
-@@ -617,6 +618,23 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
+@@ -617,6 +618,24 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
              )
              layer.register_parameter("w2_bias", w2_bias)
              set_weight_attrs(w2_bias, extra_weight_attrs)
@@ -2587,7 +3784,8 @@ index 1b2a8a74b..e025de965 100644
 +        # in process_weights_after_loading.
 +        from vllm.model_executor.layers.quantization.utils import moe_w2_cubit
 +        if moe_w2_cubit.is_w2_layer(getattr(layer, "layer_name", "")):
-+            if moe_w2_cubit.plan_pack_skip(layer):
++            if moe_w2_cubit.plan_pack_skip(
++                    layer, allow_direct_delta=True):
 +                return
 +            for pname in ("w13_weight", "w13_weight_scale", "w2_weight",
 +                          "w2_weight_scale"):
@@ -2602,7 +3800,7 @@ index 1b2a8a74b..e025de965 100644
  
      def _setup_kernel(
          self,
-@@ -722,6 +740,15 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
+@@ -722,6 +741,15 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
              )
  
      def process_weights_after_loading(self, layer):
@@ -2618,7 +3816,7 @@ index 1b2a8a74b..e025de965 100644
          w13 = layer.w13_weight
          w2 = layer.w2_weight
          w13_scale = layer.w13_weight_scale
-@@ -779,6 +806,22 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
+@@ -779,6 +807,22 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
          shared_experts: SharedExperts | None,
          shared_experts_input: torch.Tensor | None,
      ) -> torch.Tensor:
@@ -3062,10 +4260,10 @@ index 000000000..d26ce2cf4
 +        "on" if _verify() else "off")
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
 new file mode 100644
-index 000000000..f402f4388
+index 000000000..73d022986
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
-@@ -0,0 +1,2833 @@
+@@ -0,0 +1,2943 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""Routed experts on 2-bit tensor-sym planes (cubit moe_w2) for the
@@ -3101,6 +4299,7 @@ index 000000000..f402f4388
 +import ctypes
 +import functools
 +import os
++import time
 +
 +import torch
 +
@@ -3581,6 +4780,42 @@ index 000000000..f402f4388
 +    return n * k * 5 // 16 if moe_w2_delta.split_enabled() else n * k // 2
 +
 +
++def _planes_cache_parts(
++    planes13,
++    sc13,
++    planes2,
++    sc2,
++    fp13,
++    fp2,
++    *,
++    allow_separate_delta: bool = False,
++):
++    """Parts persisted in the existing planes-cache representation.
++
++    With the corrected direct loader, the standalone delta pack is the
++    authoritative FP4 cache. Avoid writing a second 138 GiB FP4 copy into
++    the planes cache; all other configurations retain their existing parts.
++    """
++    parts = dict(
++        planes13=planes13,
++        sc13=sc13,
++        planes2=planes2,
++        sc2=sc2,
++    )
++    from vllm.model_executor.layers.quantization.utils import moe_w2_delta
++    separate_delta = (
++        allow_separate_delta
++        and os.getenv("VLLM_MOE_W2_FAST_LOAD", "0") == "1"
++        and bool(os.getenv("VLLM_MOE_W2_STORE_DIR", "").strip())
++        and moe_w2_delta.enabled()
++        and not moe_w2_delta.base_enabled()
++        and not moe_w2_delta.split_enabled()
++    )
++    if not separate_delta:
++        parts.update(fp13=fp13, fp2=fp2)
++    return parts
++
++
 +# Loader-level skip (the planes-cache/pack "v1.5 follow-up"): layers the
 +# pack already serves never need their checkpoint experts in host RAM at
 +# all. Decided at CREATE time (sidecar probe), executed by stubbing the big
@@ -3591,6 +4826,9 @@ index 000000000..f402f4388
 +# that intermittently OOM'd the box when boots overlapped.
 +_n_created = 0
 +_skip_logged = False
++_fast_loader = None
++_fast_probe_s = 0.0
++_fast_probe_layers = 0
 +
 +
 +def _layer_contract(layer) -> dict:
@@ -3701,7 +4939,7 @@ index 000000000..f402f4388
 +    return True if kwargs.get("return_success") else None
 +
 +
-+def plan_pack_skip(layer) -> bool:
++def plan_pack_skip(layer, *, allow_direct_delta: bool = False) -> bool:
 +    """CREATE-time twin of the boot-from-cache paths: assign this layer's
 +    key (the same build-order counter process_weights_after_loading uses),
 +    probe whichever store this config will serve from — the pack sidecars
@@ -3749,14 +4987,57 @@ index 000000000..f402f4388
 +            if not pack_has_layer(ftag, key, n_keys, E, fslot):
 +                return False
 +    else:
-+        # GPU-resident: the planes cache is the only source that can
-+        # replace the checkpoint requant — probe it (keyed by transformer
-+        # layer index, sized exactly like process-time try_load).
++        # GPU-resident: cached 2-bit planes are the runtime base. In the
++        # corrected fast path the matching delta pack supplies FP4 directly,
++        # so the planes cache does not need a duplicate FP4 representation.
 +        lidx = _pc.layer_idx_from_name(getattr(layer, "layer_name", ""))
-+        if lidx is None or not _pc.cache_has_layer(
-+                lidx, _pc.expected_sizes(
-+                    E, N13, K13, N2, K2, want_fp4=moe_w2_delta.enabled())):
++        base_sizes = _pc.expected_sizes(
++            E, N13, K13, N2, K2, want_fp4=False)
++        t0 = time.perf_counter()
++        files = None if lidx is None else _pc.cache_layer_files(
++            lidx, base_sizes)
++        global _fast_probe_s, _fast_probe_layers
++        _fast_probe_s += time.perf_counter() - t0
++        _fast_probe_layers += 1
++        if files is None:
 +            return False
++        direct = (
++            allow_direct_delta
++            and os.getenv("VLLM_MOE_W2_FAST_LOAD", "0") == "1"
++            and moe_w2_delta.enabled()
++            and not moe_w2_delta.split_enabled()
++        )
++        if direct:
++            n_keys = _layer_cutoff() + 1
++            delta_slot = N13 * K13 // 2 + N2 * K2 // 2
++            if not pack_has_layer(
++                    "delta", key, n_keys, E, delta_slot):
++                return False
++            from vllm.model_executor.layers.quantization.utils.moe_w2_fast_loader import (  # noqa: E501
++                DirectPlaneBatchLoader,
++            )
++            global _fast_loader
++            if _fast_loader is None:
++                workers = int(os.getenv(
++                    "VLLM_MOE_W2_FAST_LOAD_WORKERS", "4"))
++                batch_layers = int(os.getenv(
++                    "VLLM_MOE_W2_FAST_LOAD_BATCH_LAYERS", "12"))
++                _fast_loader = DirectPlaneBatchLoader(
++                    workers=workers, batch_layers=batch_layers)
++                logger.info(
++                    "moe_w2 FAST-LOAD direct armed: existing planes cache "
++                    "+ matching delta pack; workers=%d batch_layers=%d; "
++                    "no CPU W2 projection or reconstruction",
++                    workers, batch_layers)
++            _fast_loader.add_layer(key, files, base_sizes)
++            layer._moe_w2_direct_cache = True
++        elif moe_w2_delta.enabled():
++            # Preserve the original serial cache path for configurations that
++            # keep FP4 parts alongside the base planes.
++            full_sizes = _pc.expected_sizes(
++                E, N13, K13, N2, K2, want_fp4=True)
++            if _pc.cache_layer_files(lidx, full_sizes) is None:
++                return False
 +    for pname in ("w13_weight", "w13_weight_scale",
 +                  "w2_weight", "w2_weight_scale"):
 +        p = getattr(layer, pname)
@@ -3772,6 +5053,11 @@ index 000000000..f402f4388
 +            "neither host-staged nor copied from the checkpoint "
 +            "(first: key %d)", key)
 +    logger.debug("moe_w2: layer key %d loader-skipped", key)
++    if key + 1 == _layer_cutoff():
++        logger.info(
++            "moe_w2 FAST-LOAD cache eligibility: %d layer probes in "
++            "%.3f s",
++            _fast_probe_layers, _fast_probe_s)
 +    return True
 +
 +
@@ -4070,8 +5356,9 @@ index 000000000..f402f4388
 +    if planes_cache.enabled() and lidx is not None:
 +        planes_cache.store(
 +            lidx,
-+            dict(planes13=planes13, sc13=sc13, planes2=planes2, sc2=sc2,
-+                 fp13=fp13, fp2=fp2))
++            _planes_cache_parts(
++                planes13, sc13, planes2, sc2, fp13, fp2,
++                allow_separate_delta=True))
 +
 +    if tier is not None:
 +        _stage_fp4_host(tier, layer_key, fp13, sc13, fp2, sc2)
@@ -4203,8 +5490,18 @@ index 000000000..f402f4388
 +    if not planes_cache.enabled() or lidx is None:
 +        return False
 +    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
-+    cached = planes_cache.try_load(lidx, planes_cache.expected_sizes(
-+        E, N13, K13, N2, K2, want_fp4=tier is not None))
++    direct = getattr(layer, "_moe_w2_direct_cache", False)
++    if direct:
++        if _fast_loader is None:
++            raise RuntimeError("moe_w2 direct fast-load coordinator missing")
++        if tier is None or layer_key not in tier._store:
++            raise RuntimeError(
++                f"moe_w2 direct fast-load layer {layer_key} lost its "
++                "matching delta cache")
++        cached = _fast_loader.take(layer_key)
++    else:
++        cached = planes_cache.try_load(lidx, planes_cache.expected_sizes(
++            E, N13, K13, N2, K2, want_fp4=tier is not None))
 +    if cached is None:
 +        return False
 +    mapped = moe_w2_mapped_host.allocate_canonical_layer(
@@ -4230,7 +5527,7 @@ index 000000000..f402f4388
 +        sc13.copy_(cached["sc13"].view(E, -1))
 +        planes2.copy_(cached["planes2"].view(E, -1))
 +        sc2.copy_(cached["sc2"].view(E, -1))
-+    if tier is not None:
++    if tier is not None and not direct:
 +        _stage_fp4_host(tier, layer_key, cached["fp13"].view(E, -1),
 +                        sc13, cached["fp2"].view(E, -1), sc2)
 +    if mapped is not None:
@@ -4250,7 +5547,11 @@ index 000000000..f402f4388
 +                  sc2, N13, K13, N2, K2, E,
 +                  ("w13_weight", "w13_weight_scale", "w2_weight",
 +                   "w2_weight_scale"))
-+    logger.info("moe_w2: layer %d planes from cache", lidx)
++    if direct:
++        _fast_loader.release_consumed(layer_key)
++    logger.info(
++        "moe_w2: layer %d planes direct from cache%s",
++        lidx, ", delta direct from pack" if direct else "")
 +    return True
 +
 +
@@ -4381,9 +5682,10 @@ index 000000000..f402f4388
 +                fp2[e0 + i] = _pack_fp4_plane(nib)
 +
 +    if planes_cache.enabled() and lidx is not None:
-+        planes_cache.store(lidx, dict(planes13=planes13, sc13=sc13,
-+                                      planes2=planes2, sc2=sc2,
-+                                      fp13=fp13, fp2=fp2))
++        planes_cache.store(
++            lidx,
++            _planes_cache_parts(
++                planes13, sc13, planes2, sc2, fp13, fp2))
 +
 +    if tier is not None:
 +        _stage_fp4_host(tier, layer_key, fp13, sc13, fp2, sc2)
@@ -5888,6 +7190,7 @@ index 000000000..f402f4388
 +    """Release model-owned registries/workspaces while retaining cubin modules."""
 +    global _n_created, _skip_logged, _stream_logged
 +    global _cutoff_cache, _resident_fit_checked
++    global _fast_loader, _fast_probe_s, _fast_probe_layers
 +    # CUDA graphs are already destroyed by gpu_worker before this hook. Drop
 +    # the last tensor views before cudaFreeHost releases their mapped backing.
 +    _LAYERS.clear()
@@ -5898,6 +7201,11 @@ index 000000000..f402f4388
 +    _stream_logged = False
 +    _cutoff_cache = None
 +    _resident_fit_checked = False
++    if _fast_loader is not None:
++        _fast_loader.close()
++    _fast_loader = None
++    _fast_probe_s = 0.0
++    _fast_probe_layers = 0
 +    ready.cache_clear()
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py b/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py
 new file mode 100644
@@ -8298,6 +9606,146 @@ index 000000000..68451bfb5
 +        raise RuntimeError(
 +            "moe_w2 residency shutdown failed: "
 +            + "; ".join(str(e) for e in errors))
+diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_fast_loader.py b/vllm/model_executor/layers/quantization/utils/moe_w2_fast_loader.py
+new file mode 100644
+index 000000000..5a36f13f9
+--- /dev/null
++++ b/vllm/model_executor/layers/quantization/utils/moe_w2_fast_loader.py
+@@ -0,0 +1,134 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Bounded direct loading from the existing MoET planes cache."""
++
++import contextlib
++import gc
++import time
++from concurrent.futures import ThreadPoolExecutor
++
++import numpy as np
++import torch
++
++from vllm.logger import init_logger
++
++logger = init_logger(__name__)
++
++
++class DirectPlaneBatchLoader:
++    """Read completed cached planes directly, without reconstruction."""
++
++    def __init__(self, workers: int, batch_layers: int):
++        if workers < 1:
++            raise ValueError("fast-load workers must be at least 1")
++        if batch_layers < 1:
++            raise ValueError("fast-load batch size must be at least 1")
++        self.workers = workers
++        self.batch_layers = batch_layers
++        self._layers: dict[int, tuple[dict[str, str], dict[str, int]]] = {}
++        self._results: dict[int, dict[str, torch.Tensor]] = {}
++        self._consumed: set[int] = set()
++        self.batch_events: list[dict] = []
++
++    def add_layer(
++        self,
++        key: int,
++        files: dict[str, str],
++        sizes: dict[str, int],
++    ) -> None:
++        contract = (dict(files), dict(sizes))
++        if key in self._layers and self._layers[key] != contract:
++            raise RuntimeError(f"fast-load layer {key} cache contract changed")
++        self._layers[key] = contract
++
++    @staticmethod
++    def _read_layer(
++        key: int,
++        files: dict[str, str],
++        sizes: dict[str, int],
++    ) -> tuple[int, dict[str, torch.Tensor]]:
++        out = {}
++        for part, expected in sizes.items():
++            path = files[part]
++            raw = np.fromfile(path, dtype=np.uint8)
++            if raw.nbytes != expected:
++                raise RuntimeError(
++                    f"fast-load cache changed while reading layer {key} "
++                    f"part {part}: {raw.nbytes} != {expected}")
++            out[part] = torch.from_numpy(raw)
++        return key, out
++
++    def _load_batch(self, requested: int) -> None:
++        pending = sorted(
++            key for key in self._layers
++            if key not in self._consumed and key not in self._results
++        )
++        if requested not in pending:
++            raise RuntimeError(f"fast-load layer {requested} was not planned")
++        start = pending.index(requested)
++        keys = pending[start:start + self.batch_layers]
++        t0 = time.perf_counter()
++        with ThreadPoolExecutor(
++            max_workers=self.workers,
++            thread_name_prefix="moe-w2-plane-load",
++        ) as pool:
++            futures = [
++                pool.submit(self._read_layer, key, *self._layers[key])
++                for key in keys
++            ]
++            for future in futures:
++                key, result = future.result()
++                self._results[key] = result
++        elapsed = time.perf_counter() - t0
++        read_bytes = sum(
++            sum(self._layers[key][1].values()) for key in keys)
++        event = {
++            "layers": keys,
++            "workers": self.workers,
++            "batch_limit": self.batch_layers,
++            "cache_bytes": read_bytes,
++            "seconds": elapsed,
++        }
++        self.batch_events.append(event)
++        logger.info(
++            "moe_w2 FAST-LOAD direct batch: layers=%s workers=%d "
++            "bytes=%.3f GiB read in %.3f s (no CPU projection or "
++            "reconstruction)",
++            keys,
++            self.workers,
++            read_bytes / 2**30,
++            elapsed,
++        )
++
++    def take(self, key: int) -> dict[str, torch.Tensor]:
++        if key not in self._results:
++            self._load_batch(key)
++        return self._results.pop(key)
++
++    def release_consumed(self, key: int) -> None:
++        self._consumed.add(key)
++        if not self._results:
++            if torch.cuda.is_available():
++                torch.cuda.synchronize()
++            gc.collect()
++            if torch.cuda.is_available():
++                torch.cuda.empty_cache()
++        if len(self._consumed) == len(self._layers):
++            elapsed = sum(event["seconds"] for event in self.batch_events)
++            read_bytes = sum(
++                event["cache_bytes"] for event in self.batch_events)
++            logger.info(
++                "moe_w2 FAST-LOAD direct complete: %d layers, %.3f GiB, "
++                "%d batches, %.3f s cache reads; zero CPU W2 projection "
++                "or reconstruction",
++                len(self._consumed),
++                read_bytes / 2**30,
++                len(self.batch_events),
++                elapsed,
++            )
++
++    def close(self) -> None:
++        self._results.clear()
++        self._layers.clear()
++        with contextlib.suppress(Exception):
++            gc.collect()
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_gate.py b/vllm/model_executor/layers/quantization/utils/moe_w2_gate.py
 new file mode 100644
 index 000000000..f01adef0d
@@ -10096,10 +11544,10 @@ index 000000000..d644b6041
 +    return vals * s
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_planes_cache.py b/vllm/model_executor/layers/quantization/utils/moe_w2_planes_cache.py
 new file mode 100644
-index 000000000..7da0e2969
+index 000000000..d61b22c7d
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_planes_cache.py
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,354 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""Disk cache for built 2-bit expert planes (+ optional FP4 delta planes).
@@ -10309,20 +11757,39 @@ index 000000000..7da0e2969
 +    reading a byte of plane data? Same validity rules (meta match + every
 +    required part at its exact expected size); os.path.getsize only. Never
 +    raises."""
++    return cache_layer_files(layer_idx, sizes) is not None
++
++
++def cache_layer_files(
++    layer_idx: int,
++    sizes: dict[str, int],
++) -> dict[str, str] | None:
++    """Return exact-size files for one compatible cached layer.
++
++    This is the cheap eligibility contract used by loader-level skipping:
++    cache-key metadata plus existence and exact size for every requested
++    part. The payload is deliberately not read or hashed here.
++    """
 +    if not enabled() or _broken:
-+        return False
++        return None
 +    try:
 +        d = _rank_dir()
 +        mp = os.path.join(d, "meta.json")
-+        if not os.path.exists(mp) or json.load(open(mp)) != _meta():
-+            return False
++        if not os.path.exists(mp):
++            return None
++        with open(mp) as f:
++            meta = json.load(f)
++        if meta != _meta():
++            return None
++        files = {}
 +        for part, nbytes in sizes.items():
 +            p = os.path.join(d, f"layer{layer_idx}.{part}.bin")
 +            if not os.path.exists(p) or os.path.getsize(p) != nbytes:
-+                return False
-+        return True
++                return None
++            files[part] = p
++        return files
 +    except Exception:  # noqa: BLE001 - probe only, staging path still works
-+        return False
++        return None
 +
 +
 +def try_load(layer_idx: int,
@@ -10331,28 +11798,15 @@ index 000000000..7da0e2969
 +    if not enabled() or _broken:
 +        return None
 +    try:
-+        d = _rank_dir()
-+        mp = os.path.join(d, "meta.json")
-+        if not os.path.exists(mp):
-+            return None
-+        if json.load(open(mp)) != _meta():
-+            logger.warning(
-+                "moe_w2 planes cache: metadata mismatch in %s — treating "
-+                "as a normal cache miss", d)
++        files = cache_layer_files(layer_idx, sizes)
++        if files is None:
 +            return None
 +        out = {}
 +        for part, nbytes in sizes.items():
-+            p = os.path.join(d, f"layer{layer_idx}.{part}.bin")
-+            if not os.path.exists(p):
-+                logger.info("moe_w2 planes cache: MISS layer %d (%s absent)",
-+                            layer_idx, part)
++            raw = np.fromfile(files[part], dtype=np.uint8)
++            if raw.nbytes != nbytes:
 +                return None
-+            if os.path.getsize(p) != nbytes:
-+                logger.info(
-+                    "moe_w2 planes cache: MISS layer %d (%s size %d != %d)",
-+                    layer_idx, part, os.path.getsize(p), nbytes)
-+                return None
-+            out[part] = torch.from_numpy(np.fromfile(p, dtype=np.uint8))
++            out[part] = torch.from_numpy(raw)
 +        return out
 +    except Exception as e:  # noqa: BLE001
 +        logger.warning("moe_w2 planes cache: read failed (%s) — rebuilding",
@@ -13056,6 +14510,279 @@ index 6895771e2..efe18793a 100644
      }
 -
 -# fmt: on
+diff --git a/vllm/tool_parsers/abstract_tool_parser.py b/vllm/tool_parsers/abstract_tool_parser.py
+index a1c4cf1ff..e661ecadc 100644
+--- a/vllm/tool_parsers/abstract_tool_parser.py
++++ b/vllm/tool_parsers/abstract_tool_parser.py
+@@ -66,7 +66,7 @@ class ToolParser:
+         super().__init_subclass__(**kwargs)
+         if (
+             cls.structural_tag_model is not None
+-            and envs.VLLM_ENFORCE_STRICT_TOOL_CALLING
++            and envs.VLLM_ENFORCE_STRICT_TOOL_CALLING is not False
+         ):
+             cls.supports_required_and_named = False
+ 
+@@ -173,7 +173,8 @@ class ToolParser:
+     ):
+         if self.structural_tag_model is None:
+             return None
+-        if not envs.VLLM_ENFORCE_STRICT_TOOL_CALLING:
++        enforce_strict = envs.VLLM_ENFORCE_STRICT_TOOL_CALLING
++        if enforce_strict is False:
+             return None
+         from vllm.tool_parsers.structural_tag_registry import get_model_structural_tag
+ 
+@@ -182,6 +183,7 @@ class ToolParser:
+             tools=request.tools,
+             tool_choice=request.tool_choice,
+             reasoning=reasoning,
++            force_strict=enforce_strict is True,
+         )
+ 
+     def extract_tool_calls(
+diff --git a/vllm/tool_parsers/deepseekv32_tool_parser.py b/vllm/tool_parsers/deepseekv32_tool_parser.py
+index c597ac619..18d13b012 100644
+--- a/vllm/tool_parsers/deepseekv32_tool_parser.py
++++ b/vllm/tool_parsers/deepseekv32_tool_parser.py
+@@ -83,10 +83,6 @@ class DeepSeekV32ToolParser(ToolParser):
+         self.invoke_complete_regex = re.compile(
+             r'<｜DSML｜invoke\s+name="([^"]+)"\s*>(.*?)</｜DSML｜invoke>', re.DOTALL
+         )
+-        self.parameter_complete_regex = re.compile(
+-            r'<｜DSML｜parameter\s+name="([^"]+)"\s+string="(true|false)"\s*>(.*?)</｜DSML｜parameter>',
+-            re.DOTALL,
+-        )
+         self.invoke_start_regex = re.compile(r'<｜DSML｜invoke\s+name="([^"]+)"\s*>')
+         self.parameter_start_regex = re.compile(
+             r'<｜DSML｜parameter\s+name="([^"]+)"\s+string="(true|false)"\s*>'
+@@ -120,12 +116,55 @@ class DeepSeekV32ToolParser(ToolParser):
+         """Generate a unique tool call ID."""
+         return f"call_{uuid.uuid4().hex[:24]}"
+ 
++    def _find_parameter_end(
++        self,
++        text: str,
++        content_start: int = 0,
++    ) -> tuple[int, int] | None:
++        """Find the closing tag paired with an already-consumed parameter.
++
++        DeepSeek's structural grammar represents object-valued parameters as
++        nested DSML parameter tags. A non-greedy regex therefore stops at the
++        first child closing tag instead of the outer parameter boundary.
++        """
++        end_token = "</｜DSML｜parameter>"
++        depth = 1
++        cursor = content_start
++        while True:
++            next_start = self.parameter_start_regex.search(text, cursor)
++            next_end = text.find(end_token, cursor)
++            if next_end == -1:
++                return None
++            if next_start is not None and next_start.start() < next_end:
++                depth += 1
++                cursor = next_start.end()
++                continue
++            depth -= 1
++            if depth == 0:
++                return next_end, next_end + len(end_token)
++            cursor = next_end + len(end_token)
++
+     def _parse_invoke_params(self, invoke_str: str) -> dict[str, tuple[str, str]]:
++        """Parse the top-level parameters of one invoke, preserving children."""
+         param_dict: dict[str, tuple[str, str]] = {}
+-        for param_name, string_attr, param_val in self.parameter_complete_regex.findall(
+-            invoke_str
+-        ):
+-            param_dict[param_name] = (param_val, string_attr)
++        cursor = 0
++        while cursor < len(invoke_str):
++            while cursor < len(invoke_str) and invoke_str[cursor].isspace():
++                cursor += 1
++            if cursor == len(invoke_str):
++                break
++            match = self.parameter_start_regex.match(invoke_str, cursor)
++            if match is None:
++                raise ValueError("Unexpected text in DeepSeek DSML invoke parameters")
++            bounds = self._find_parameter_end(invoke_str, match.end())
++            if bounds is None:
++                raise ValueError("Unclosed DeepSeek DSML parameter")
++            end_start, end_after = bounds
++            param_dict[match.group(1)] = (
++                invoke_str[match.end() : end_start],
++                match.group(2),
++            )
++            cursor = end_after
+         return param_dict
+ 
+     @staticmethod
+@@ -158,13 +197,53 @@ class DeepSeekV32ToolParser(ToolParser):
+         """Convert raw string param values using the tool schema types."""
+         param_config = find_tool_properties(self.tools, function_name)
+ 
++        return self._convert_param_dict(param_dict, param_config)
++
++    def _convert_param_dict(
++        self,
++        param_dict: dict[str, tuple[str, str]],
++        param_config: dict[str, Any],
++        *,
++        open_object: bool = False,
++    ) -> dict[str, Any]:
++        """Convert one DSML object, including nested parameter objects."""
++
+         converted: dict[str, Any] = {}
+         for name, (value, string_attr) in param_dict.items():
+             if string_attr == "true":
+                 converted[name] = value
+                 continue
+ 
+-            param_types = extract_types_from_schema(param_config.get(name, {}))
++            schema = param_config.get(name, {})
++            param_types = extract_types_from_schema(schema)
++            stripped = value.strip()
++            if not stripped and ("object" in param_types or open_object):
++                converted[name] = {}
++                continue
++            nested_parameter = self.parameter_start_regex.match(stripped)
++            if nested_parameter and (
++                "object" in param_types or (open_object and not schema)
++            ):
++                nested_config = (
++                    schema.get("properties", {}) if isinstance(schema, dict) else {}
++                )
++                nested_params = self._parse_invoke_params(stripped)
++                converted[name] = self._convert_param_dict(
++                    nested_params,
++                    nested_config,
++                    open_object=(
++                        open_object
++                        if not schema
++                        else schema.get("additionalProperties", True) is not False
++                    ),
++                )
++                continue
++            if open_object and not schema:
++                try:
++                    converted[name] = json.loads(stripped)
++                except json.JSONDecodeError:
++                    converted[name] = value
++                continue
+             converted[name] = coerce_to_schema_type(value, param_types)
+         return self._repair_param_dict(converted, param_config)
+ 
+@@ -444,11 +523,28 @@ class DeepSeekV32ToolParser(ToolParser):
+             index = self._active_tool_index
+ 
+             if self._active_param_mode is not None:
++                if self._active_param_mode in ("wrapper", "object"):
++                    combined = "".join(self._active_param_parts) + self._buffer
++                    bounds = self._find_parameter_end(combined)
++                    if bounds is None:
++                        self._active_param_parts[:] = [combined]
++                        self._buffer = ""
++                        return
++                    end_pos, end_after = bounds
++                    self._active_param_parts[:] = [combined[:end_pos]]
++                    self._buffer = combined[end_after:]
++                    self._finish_buffered_param(tool_call_deltas, index)
++                    self._active_param_name = None
++                    self._active_param_string_attr = None
++                    self._active_param_mode = None
++                    self._active_param_parts.clear()
++                    continue
++
+                 end_pos = self._buffer.find(parameter_end_token)
+                 if end_pos != -1:
+                     raw_content = self._buffer[:end_pos]
+                     self._buffer = self._buffer[end_pos + len(parameter_end_token) :]
+-                    if self._active_param_mode in ("wrapper", "buffered"):
++                    if self._active_param_mode == "buffered":
+                         self._active_param_parts.append(raw_content)
+                         self._finish_buffered_param(tool_call_deltas, index)
+                     elif self._active_param_mode == "string":
+@@ -472,7 +568,7 @@ class DeepSeekV32ToolParser(ToolParser):
+                 if safe_len > 0:
+                     raw_content = self._buffer[:safe_len]
+                     self._buffer = self._buffer[safe_len:]
+-                    if self._active_param_mode in ("wrapper", "buffered"):
++                    if self._active_param_mode == "buffered":
+                         self._active_param_parts.append(raw_content)
+                     elif self._active_param_mode == "string":
+                         self._add_tool_call_delta(
+@@ -516,6 +612,9 @@ class DeepSeekV32ToolParser(ToolParser):
+                 continue
+ 
+             param_types = self._param_types_for_name(name)
++            if "object" in param_types:
++                self._active_param_mode = "object"
++                continue
+             if not self._can_stream_raw_param(param_types):
+                 self._active_param_mode = "buffered"
+                 continue
+diff --git a/vllm/tool_parsers/structural_tag_registry.py b/vllm/tool_parsers/structural_tag_registry.py
+index 99c92f8f0..f1ebdbec7 100644
+--- a/vllm/tool_parsers/structural_tag_registry.py
++++ b/vllm/tool_parsers/structural_tag_registry.py
+@@ -100,16 +100,20 @@ def get_model_structural_tag(
+     tools: Sequence[ChatCompletionToolsParam | ResponsesTool] | None,
+     tool_choice: ToolChoice,
+     reasoning: bool,
++    *,
++    force_strict: bool = False,
+ ) -> StructuralTag | None:
+     """Build a structural tag with xgrammar's builtin model templates."""
+ 
+     if not tools or tool_choice == "none":
+         return None
+ 
+-    if tool_choice == "auto" and not _any_tool_strict(tools):
++    if tool_choice == "auto" and not force_strict and not _any_tool_strict(tools):
+         return None
+ 
+-    dumped_tools = [_dump_tool_for_xgrammar(tool) for tool in tools]
++    dumped_tools = [
++        _dump_tool_for_xgrammar(tool, force_strict=force_strict) for tool in tools
++    ]
+     dumped_tool_choice = _dump_tool_choice_for_xgrammar(tool_choice)
+ 
+     if model in _VLLM_STRUCTURAL_TAG_REGISTRY:
+@@ -138,8 +142,16 @@ def get_model_structural_tag(
+ 
+ def _dump_tool_for_xgrammar(
+     tool: ChatCompletionToolsParam | ResponsesTool,
++    *,
++    force_strict: bool = False,
+ ) -> dict[str, Any]:
+-    """Convert tool objects to xgrammar's Chat Completions tool protocol."""
++    """Convert tool objects to xgrammar's Chat Completions tool protocol.
++
++    Args:
++        tool: The requested tool.
++        force_strict: Whether to mark the dumped copy as strict without
++            mutating the request.
++    """
+ 
+     if isinstance(tool, FunctionTool):
+         function: dict[str, Any] = {"name": tool.name}
+@@ -147,11 +159,15 @@ def _dump_tool_for_xgrammar(
+             function["description"] = tool.description
+         if tool.parameters is not None:
+             function["parameters"] = tool.parameters
+-        if tool.strict is not None:
+-            function["strict"] = tool.strict
++        strict = True if force_strict else tool.strict
++        if strict is not None:
++            function["strict"] = strict
+         return {"type": "function", "function": function}
+     dumped_tool = tool.model_dump(mode="json", exclude_none=True)
+     if isinstance(tool, ChatCompletionToolsParam):
++        strict = True if force_strict else tool.function.strict
++        if strict is not None:
++            dumped_tool["function"]["strict"] = strict
+         return dumped_tool
+     return dict(dumped_tool)
+ 
 diff --git a/vllm/transformers_utils/configs/speculators/algos.py b/vllm/transformers_utils/configs/speculators/algos.py
 index 0dc3ccce0..fb75a278c 100644
 --- a/vllm/transformers_utils/configs/speculators/algos.py
@@ -15501,7 +17228,7 @@ index dbe3c5705..f12d719fb 100644
      _fwd_grouped_kernel_stage1[grid](
          q,
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 90d93a110..418f33346 100644
+index 90d93a110..20aef47c2 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -57,7 +57,10 @@ from vllm.v1.metrics.perf import ModelMetrics, PerfStats
@@ -15542,7 +17269,41 @@ index 90d93a110..418f33346 100644
  
              # Free encoder inputs only after the step has actually executed.
              if request.has_encoder_inputs:
-@@ -2263,6 +2278,17 @@ class Scheduler(SchedulerInterface):
+@@ -1596,17 +1611,28 @@ class Scheduler(SchedulerInterface):
+                 request.status = RequestStatus.FINISHED_STOPPED
+                 stopped = True
+ 
+-            if new_token_ids and self.structured_output_manager.should_advance(request):
++            if new_token_ids and self.structured_output_manager.should_advance(
++                request, new_token_ids=new_token_ids
++            ):
+                 struct_output_request = request.structured_output_request
+                 assert struct_output_request is not None
+-                assert struct_output_request.grammar is not None
+-                if not struct_output_request.grammar.accept_tokens(  # type: ignore[union-attr]
+-                    req_id, new_token_ids
++                grammar = struct_output_request.grammar
++                assert grammar is not None
++                # new_token_ids can be a mixed block of reasoning content, then
++                # the reasoning end marker, then the start of the grammar content.
++                # Trim the reasoning content so the grammar only sees grammar content.
++                advance_token_ids = (
++                    self.structured_output_manager.trim_reasoning_for_advance(
++                        request, new_token_ids
++                    )
++                )
++                if advance_token_ids and not grammar.accept_tokens(
++                    req_id, advance_token_ids
+                 ):
+                     logger.error(
+                         "Unexpected: grammar rejected tokens %s for request %s. "
+                         "Terminating request.",
+-                        new_token_ids,
++                        advance_token_ids,
+                         req_id,
+                     )
+                     request.status = RequestStatus.FINISHED_ERROR
+@@ -2263,6 +2289,17 @@ class Scheduler(SchedulerInterface):
              perf_stats=perf_stats,
          )
  
@@ -15772,6 +17533,261 @@ index de869b19a..348eaf2e9 100644
 +            vllm_max_batch_size=self._max_num_seqs,
 +            vllm_num_speculative_tokens=self._num_spec_tokens,
 +        )
+diff --git a/vllm/v1/structured_output/__init__.py b/vllm/v1/structured_output/__init__.py
+index 30921f3d7..8151c040e 100644
+--- a/vllm/v1/structured_output/__init__.py
++++ b/vllm/v1/structured_output/__init__.py
+@@ -2,12 +2,11 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import itertools
+ import multiprocessing
+-from collections.abc import Iterable
++from collections.abc import Iterable, Sequence
+ from concurrent.futures import Future, ThreadPoolExecutor
+ from typing import TYPE_CHECKING
+ 
+ from vllm.config import VllmConfig
+-from vllm.logger import init_logger
+ from vllm.reasoning import ReasoningParserManager
+ from vllm.tokenizers import cached_tokenizer_from_config
+ from vllm.utils.import_utils import LazyLoader
+@@ -15,7 +14,6 @@ from vllm.v1.structured_output.backend_guidance import GuidanceBackend
+ from vllm.v1.structured_output.backend_types import (
+     StructuredOutputBackend,
+     StructuredOutputGrammar,
+-    StructuredOutputOptions,
+ )
+ from vllm.v1.structured_output.backend_xgrammar import XgrammarBackend
+ 
+@@ -30,9 +28,6 @@ else:
+     torch = LazyLoader("torch", globals(), "torch")
+ 
+ 
+-logger = init_logger(__name__)
+-
+-
+ class StructuredOutputManager:
+     """Engine-level manager for structured output requests."""
+ 
+@@ -272,23 +267,69 @@ class StructuredOutputManager:
+                 grammar = structured_output_request.grammar
+                 apply_bitmask = self.should_fill_bitmask(request)
+ 
++                reasoner = self._get_reasoner(request)
++                detect_reasoning_end = (
++                    not apply_bitmask
++                    and reasoner is not None
++                    and not self.enable_in_reasoning
++                )
++                simulated_buf: list[int] | None = None
++                history_len = 0
++
+                 state_advancements = 0
++                post_reasoning_end_in_window = False
+                 req_tokens = scheduled_spec_decode_tokens.get(req_id, ())
+-                if self.vllm_config.model_config.is_diffusion and req_tokens:
+-                    # Diffusion LLMs don't sample a bonus token after the
+-                    # scheduled positions, so don't append the -1 placeholder.
+-                    token_iter: Iterable[int] = req_tokens
+-                else:
+-                    token_iter = itertools.chain(req_tokens, (-1,))
+-                for token in token_iter:
++                for i, token in enumerate(req_tokens):
+                     self._fill_bitmasks(((grammar, cumulative_index, apply_bitmask),))
++                    advance_grammar = apply_bitmask
+                     if token == -1:
+-                        # Stop advancing the grammar once we hit a padding token.
+                         apply_bitmask = False
+-                    if apply_bitmask and not grammar.is_terminated():
++                        advance_grammar = False
++                    elif (
++                        detect_reasoning_end
++                        and reasoner is not None
++                        and not apply_bitmask
++                    ):
++                        if simulated_buf is None:
++                            history = list(request.all_token_ids)
++                            history_len = len(history)
++                            simulated_buf = history + list(req_tokens)
++                        simulated = simulated_buf[: history_len + i + 1]
++                        if reasoner.is_reasoning_end_streaming(simulated, [token]):
++                            # Reasoning ended mid-window. Constrain the rest
++                            # of the window via bitmask. Skip grammar advance
++                            # through the marker (it is reasoning content);
++                            # try to advance through subsequent drafts so the
++                            # next bitmask row reflects the post-advance state,
++                            # but tolerate rejection since those drafts predate
++                            # the bitmask and are not guaranteed valid.
++                            apply_bitmask = True
++                            advance_grammar = False
++                            post_reasoning_end_in_window = True
++                    if advance_grammar and not grammar.is_terminated():
+                         accepted = grammar.accept_tokens(req_id, [token])
+-                        assert accepted, (token, req_id, scheduled_spec_decode_tokens)
+-                        state_advancements += 1
++                        if accepted:
++                            state_advancements += 1
++                        elif not post_reasoning_end_in_window:
++                            raise AssertionError(
++                                (token, req_id, scheduled_spec_decode_tokens)
++                            )
++                    cumulative_index += 1
++                # Diffusion LLMs don't sample a bonus token after the
++                # scheduled positions, so skip its bitmask in that case.
++                if not (self.vllm_config.model_config.is_diffusion and req_tokens):
++                    # bonus_apply must be True when the bonus-row position
++                    # should be grammar-constrained. Two triggers:
++                    # - should_fill_bitmask(request): reasoning was already
++                    #   over at step start (or no reasoner /
++                    #   enable_in_reasoning).
++                    # - apply_bitmask: reasoning ended mid-window in this
++                    #   call and was flipped True after the marker;
++                    #   should_fill_bitmask still returns False here because
++                    #   reasoning_ended is only persisted later by
++                    #   should_advance.
++                    bonus_apply = self.should_fill_bitmask(request) or apply_bitmask
++                    self._fill_bitmasks(((grammar, cumulative_index, bonus_apply),))
+                     cumulative_index += 1
+                 if state_advancements > 0:
+                     grammar.rollback(state_advancements)
+@@ -322,7 +363,11 @@ class StructuredOutputManager:
+             return request.structured_output_request.reasoning_ended
+         return True
+ 
+-    def should_advance(self, request: "Request") -> bool:
++    def should_advance(
++        self,
++        request: "Request",
++        new_token_ids: list[int] | None = None,
++    ) -> bool:
+         if not request.use_structured_output:
+             return False
+ 
+@@ -345,33 +390,86 @@ class StructuredOutputManager:
+         if structured_req.reasoning_ended:
+             return True
+ 
+-        # Check if reasoning ends in *this* step
+-        delta_from = request.num_computed_tokens - request.num_output_placeholders
++        # Check if reasoning ends in *this* step.
++        # When the caller passes new_token_ids (the tokens that were just
++        # appended this step), use it directly as the delta window. The
++        # placeholder-derived fallback assumes num_output_placeholders ==
++        # len(new_token_ids), which breaks under async scheduling + spec
++        # decode when some drafts are rejected (#43388): the placeholder
++        # count remains > 0 after the step and the computed delta window
++        # starts past the reasoning-end marker.
+         all_token_ids = request.all_token_ids
+-        start = (
+-            delta_from if delta_from >= 0 else max(len(all_token_ids) + delta_from, 0)
+-        )
+-        if reasoner.is_reasoning_end_streaming(
+-            all_token_ids, itertools.islice(all_token_ids, start, None)
+-        ):
++        if new_token_ids:
++            # The tokens were already appended this step, so the step window
++            # starts exactly len(new_token_ids) from the end.
++            start = len(all_token_ids) - len(new_token_ids)
++            delta_ids: Iterable[int] = new_token_ids
++        else:
++            delta_from = request.num_computed_tokens - request.num_output_placeholders
++            start = (
++                delta_from
++                if delta_from >= 0
++                else max(len(all_token_ids) + delta_from, 0)
++            )
++            delta_ids = itertools.islice(all_token_ids, start, None)
++        if reasoner.is_reasoning_end_streaming(all_token_ids, delta_ids):
+             structured_req.reasoning_ended = True
+ 
+-            # Reasoning just ended this step. Defer FSM advance until the next
+-            # pass (see reasoning_ended check above) for JSON/regex/choice/grammar:
+-            # advancing on the closing boundary token can accept tokens that still
+-            # belong to the reasoning stream. Structural tags are the only safe
+-            # same-step exception: they model phased output (e.g. thinking tag ->
+-            # answer tag), and speculative decoding must run grammar.validate_tokens
+-            # on draft tokens produced immediately after that transition.
+-            if (
+-                self.vllm_config.speculative_config is not None
+-                and structured_req.structured_output_key[0]
+-                == StructuredOutputOptions.STRUCTURAL_TAG
+-            ):
+-                return True
++            # Record the boundary so the scheduler can exclude reasoning tokens.
++            end_index = self._find_reasoning_end_index(reasoner, all_token_ids, start)
++
++            structured_req.reasoning_end_token_index = end_index
++            return True
+ 
+         return False
+ 
++    @staticmethod
++    def _find_reasoning_end_index(
++        reasoner: "ReasoningParser", all_token_ids: Sequence[int], start: int
++    ) -> int:
++        """Locates the last reasoning token within ``all_token_ids[start:]``.
++
++        Returns:
++            The absolute index of the token at which
++            ``is_reasoning_end_streaming`` first fires. Falls back to the
++            final index when no single token triggers the detection (e.g.
++            a multi-token marker only recognized on the full delta), which
++            conservatively treats the whole step as reasoning content.
++        """
++        prefix = list(itertools.islice(all_token_ids, start))
++        for idx in range(start, len(all_token_ids)):
++            token = all_token_ids[idx]
++            prefix.append(token)
++            if reasoner.is_reasoning_end_streaming(prefix, [token]):
++                return idx
++        return len(all_token_ids) - 1
++
++    def trim_reasoning_for_advance(
++        self, request: "Request", new_token_ids: list[int]
++    ) -> list[int]:
++        """Drops reasoning content from tokens about to advance the grammar.
++
++        When reasoning ends mid-step (see should_advance), the step's output
++        still contains reasoning tokens up to and including the end marker.
++        Those are not grammar content: feeding them to accept_tokens makes
++        the grammar reject the marker and kills the request (#44006).
++
++        Returns:
++            The suffix of ``new_token_ids`` that follows the reasoning-end
++            marker. Steps fully after the boundary are returned unchanged.
++        """
++        structured_req = request.structured_output_request
++        if structured_req is None:
++            return new_token_ids
++        end_idx = structured_req.reasoning_end_token_index
++        if end_idx is None:
++            return new_token_ids
++        first_idx = len(request.all_token_ids) - len(new_token_ids)
++        num_reasoning = end_idx + 1 - first_idx
++        if num_reasoning <= 0:
++            return new_token_ids
++        return new_token_ids[num_reasoning:]
++
+     def clear_backend(self) -> None:
+         if self.backend is not None:
+             self.backend.destroy()
+diff --git a/vllm/v1/structured_output/request.py b/vllm/v1/structured_output/request.py
+index dfa8c7efc..f9ab54a04 100644
+--- a/vllm/v1/structured_output/request.py
++++ b/vllm/v1/structured_output/request.py
+@@ -23,6 +23,12 @@ class StructuredOutputRequest:
+     params: StructuredOutputsParams
+     _grammar: Future[StructuredOutputGrammar] | StructuredOutputGrammar | None = None
+     reasoning_ended: bool | None = None
++    # Absolute index into the request's all_token_ids of the last reasoning
++    # token (the reasoning-end marker). Tokens at or before this index are
++    # reasoning content and must never be fed to the grammar. Only set when
++    # reasoning ends in a step whose tokens the scheduler advances immediately
++    # (structural tags + speculative decoding, see #42452).
++    reasoning_end_token_index: int | None = None
+     reasoning_parser_kwargs: dict[str, Any] | None = None
+     # Cached per request; do not share reasoning parsers across requests because
+     # their behavior can depend on reasoning_parser_kwargs.
 diff --git a/vllm/v1/worker/gpu/cudagraph_utils.py b/vllm/v1/worker/gpu/cudagraph_utils.py
 index dad1777b4..358acf464 100644
 --- a/vllm/v1/worker/gpu/cudagraph_utils.py
@@ -19256,3 +21272,192 @@ index 5e266a313..4bf3b010c 100644
  
      def elastic_ep_execute(self, execute_method: str, *args, **kwargs):
          return self.elastic_ep_executor.execute(execute_method, *args, **kwargs)
+diff --git a/vllm/v1/worker/utils.py b/vllm/v1/worker/utils.py
+index c0f44b6db..2ea8a014a 100644
+--- a/vllm/v1/worker/utils.py
++++ b/vllm/v1/worker/utils.py
+@@ -40,10 +40,12 @@ logger = init_logger(__name__)
+ @triton.jit
+ def _zero_kv_blocks_kernel(
+     seg_addrs_ptr,
++    seg_block_strides_ptr,
++    seg_page_sizes_ptr,
+     block_ids_ptr,
+     n_blocks,
+     N_SEGS: tl.constexpr,
+-    PAGE_SIZE_EL: tl.constexpr,
++    MAX_CHUNKS: tl.constexpr,
+     BLOCK_SIZE: tl.constexpr,
+ ):
+     """Zero KV cache blocks across all segments in a single launch.
+@@ -59,19 +61,23 @@ def _zero_kv_blocks_kernel(
+     Programs are mapped as (block_index, seg_index, chunk_index).
+     """
+     pid = tl.program_id(0)
+-    chunks = PAGE_SIZE_EL // BLOCK_SIZE
+-    work_per_block = N_SEGS * chunks
++    work_per_block = N_SEGS * MAX_CHUNKS
+     block_index = pid // work_per_block
+     if block_index >= n_blocks:
+         return
+     remainder = pid % work_per_block
+-    seg_index = remainder // chunks
+-    chunk_index = remainder % chunks
++    seg_index = remainder // MAX_CHUNKS
++    chunk_index = remainder % MAX_CHUNKS
++    block_stride_el = tl.load(seg_block_strides_ptr + seg_index)
++    page_size_el = tl.load(seg_page_sizes_ptr + seg_index)
++    if chunk_index >= page_size_el // BLOCK_SIZE:
++        return
+     block_id = tl.load(block_ids_ptr + block_index)
+     seg_addr = tl.load(seg_addrs_ptr + seg_index)
+     ptr = tl.cast(seg_addr, tl.pointer_type(tl.int32))
+     offset = (
+-        block_id.to(tl.int64) * PAGE_SIZE_EL + chunk_index.to(tl.int64) * BLOCK_SIZE
++        block_id.to(tl.int64) * block_stride_el.to(tl.int64)
++        + chunk_index.to(tl.int64) * BLOCK_SIZE
+     )
+     cols = tl.arange(0, BLOCK_SIZE).to(tl.int64)
+     tl.store(ptr + offset + cols, tl.zeros([BLOCK_SIZE], dtype=tl.int32))
+@@ -102,14 +108,16 @@ class KVBlockZeroer:
+ 
+         Block IDs from the scheduler reference logical blocks whose size
+         may differ from the kernel block size (virtual block splitting).
+-        PAGE_SIZE_EL accounts for this ratio so that
+-        ``block_id * PAGE_SIZE_EL`` lands at the correct offset.
++        Each virtual block is represented as an independent segment so its
++        physical block stride and zeroed page span remain independent.
+ 
+         Only AttentionSpec layers are processed; Mamba layers are skipped.
+         """
+         self.device = device
+         self.pin_memory = pin_memory
+-        self._meta: tuple[torch.Tensor, int, int, int] | None = None
++        self._meta: (
++            tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int, int] | None
++        ) = None
+         self._id_cap: int = 0
+         self._ids_pinned: torch.Tensor | None = None
+         self._ids_gpu: torch.Tensor | None = None
+@@ -118,7 +126,8 @@ class KVBlockZeroer:
+             runner_only_attn_layers = set()
+         seen_ptrs: set[int] = set()
+         seg_addrs: list[int] = []
+-        page_size_el: int | None = None
++        seg_block_strides: list[int] = []
++        seg_page_sizes: list[int] = []
+ 
+         for group in attn_groups_iter:
+             spec = group.kv_cache_spec
+@@ -127,6 +136,7 @@ class KVBlockZeroer:
+             if group.kv_cache_group_id >= len(kernel_block_sizes):
+                 continue
+             kernel_bs = kernel_block_sizes[group.kv_cache_group_id]
++            assert spec.block_size % kernel_bs == 0
+             ratio = spec.block_size // kernel_bs
+             block_dim = group.backend.get_kv_cache_block_dim(
+                 kernel_bs,
+@@ -147,33 +157,42 @@ class KVBlockZeroer:
+                 seen_ptrs.add(dp)
+ 
+                 el = kv.element_size()
+-                cur_bytes = kv.stride(block_dim) * el
+-                assert cur_bytes % 4 == 0
+-                kernel_block_el = cur_bytes // 4
+-                cur_page_el = kernel_block_el * ratio
+-                if page_size_el is None:
+-                    page_size_el = cur_page_el
+-                else:
+-                    assert page_size_el == cur_page_el, (
+-                        f"Non-uniform page sizes: {page_size_el} vs {cur_page_el}"
+-                    )
+-
+-                block_stride_bytes = cur_bytes
++                block_stride_bytes = kv.stride(block_dim) * el
++                assert block_stride_bytes % 4 == 0
++                assert kv.shape[block_dim] % ratio == 0
+                 outer_dims = [
+                     d
+                     for d in range(block_dim)
+                     if kv.stride(d) * el > block_stride_bytes
+                 ]
+                 outer_strides = [kv.stride(d) * el for d in outer_dims]
++                inner_dims = [
++                    d for d in range(kv.ndim) if d != block_dim and d not in outer_dims
++                ]
++                kernel_page_bytes = el + sum(
++                    (kv.shape[d] - 1) * kv.stride(d) * el for d in inner_dims
++                )
++                assert kernel_page_bytes % 4 == 0
++                logical_block_stride_bytes = block_stride_bytes * ratio
+                 for outer in iprod(*(range(kv.shape[d]) for d in outer_dims)):
+                     off_bytes = sum(i * s for i, s in zip(outer, outer_strides))
+-                    seg_addrs.append(dp + off_bytes)
+-
+-        if not seg_addrs or page_size_el is None:
++                    assert (dp + off_bytes) % 4 == 0
++                    for virtual_index in range(ratio):
++                        seg_addrs.append(
++                            dp + off_bytes + virtual_index * block_stride_bytes
++                        )
++                        seg_block_strides.append(logical_block_stride_bytes // 4)
++                        seg_page_sizes.append(kernel_page_bytes // 4)
++
++        if not seg_addrs:
+             self._meta = None
+             return
+ 
+-        blk_size = min(largest_power_of_2_divisor(page_size_el), 1024)
++        max_page_size_el = max(seg_page_sizes)
++        blk_size = min(
++            min(largest_power_of_2_divisor(ps) for ps in seg_page_sizes),
++            1024,
++        )
+         self._id_cap = 8192
+         self._ids_pinned = torch.empty(
+             self._id_cap,
+@@ -183,7 +202,9 @@ class KVBlockZeroer:
+         self._ids_gpu = torch.empty(self._id_cap, dtype=torch.int64, device=self.device)
+         self._meta = (
+             torch.tensor(seg_addrs, dtype=torch.uint64, device=self.device),
+-            page_size_el,
++            torch.tensor(seg_block_strides, dtype=torch.int64, device=self.device),
++            torch.tensor(seg_page_sizes, dtype=torch.int64, device=self.device),
++            max_page_size_el // blk_size,
+             blk_size,
+             len(seg_addrs),
+         )
+@@ -192,7 +213,14 @@ class KVBlockZeroer:
+         """Zero the KV cache memory for the given block IDs."""
+         if not block_ids or self._meta is None:
+             return
+-        seg_addrs, page_size_el, blk_size, n_segs = self._meta
++        (
++            seg_addrs,
++            seg_block_strides,
++            seg_page_sizes,
++            max_chunks,
++            blk_size,
++            n_segs,
++        ) = self._meta
+         n_blocks = len(block_ids)
+         if n_blocks > self._id_cap:
+             self._id_cap = n_blocks * 2
+@@ -208,13 +236,15 @@ class KVBlockZeroer:
+         self._ids_pinned[:n_blocks].numpy()[:] = block_ids
+         idx = self._ids_gpu[:n_blocks]
+         idx.copy_(self._ids_pinned[:n_blocks], non_blocking=True)
+-        grid = (n_blocks * n_segs * (page_size_el // blk_size),)
++        grid = (n_blocks * n_segs * max_chunks,)
+         _zero_kv_blocks_kernel[grid](
+             seg_addrs,
++            seg_block_strides,
++            seg_page_sizes,
+             idx,
+             n_blocks,
+             N_SEGS=n_segs,
+-            PAGE_SIZE_EL=page_size_el,
++            MAX_CHUNKS=max_chunks,
+             BLOCK_SIZE=blk_size,
+         )
+ 

@@ -18,7 +18,7 @@ repository's generated publication patch.
 
 The validated software pins are listed in [PROVENANCE.md](PROVENANCE.md).
 The important runtime source is
-`jpezzulli/vllm@a2131dd7a944353e9323566107c72f4a17441024`.
+`jpezzulli/vllm@e89479ec2c911b2864ed61df4b83668686d75b67`.
 
 The validated core environment used Python 3.14, PyTorch 2.11.0+cu130,
 TorchVision 0.26.0+cu130, TorchAudio 2.11.0+cu130, FlashInfer 0.6.14,
@@ -40,9 +40,11 @@ hf download deepseek-ai/DeepSeek-V4-Flash-0731 \
 ```
 
 The model path is a default, not a requirement. Set `MODEL_PATH` when serving
-from another location. The MoET pack directory is a persistent quantization
-cache; it avoids rebuilding existing FP4 data but is not the backing store for
-mapped W2 layers.
+from another location. The MoET cache root holds both existing formats used by
+fast startup: cache-keyed per-layer runtime planes and the matching FP4 delta
+pack. Mapped W2 layers are still freshly allocated in canonical NUMA-local
+memory; their bytes are copied directly from completed plane files rather than
+reconstructed from checkpoint or delta data.
 
 ## 2. Build the native environment
 
@@ -77,6 +79,7 @@ target host.
 MODEL_PATH=/srv/models/hf/ds4flash0731 \
 SERVED_MODEL_NAME=pennyroyal \
 MOET_STORE_DIR=/srv/models/moet-packs/DeepSeek-V4-Flash \
+MOET_PLANES_CACHE_DIR=/srv/models/moet-packs/DeepSeek-V4-Flash \
 ./scripts/serve-pro6000-ds4flash.sh
 ```
 
@@ -90,6 +93,7 @@ Useful path overrides are:
 | `PORT` | `8001` |
 | `CUDA_VISIBLE_DEVICES` | `0` |
 | `MOET_STORE_DIR` | `/srv/models/moet-packs/DeepSeek-V4-Flash` |
+| `MOET_PLANES_CACHE_DIR` | `MOET_STORE_DIR` |
 | `CACHE_ROOT` | `/srv/cache/vllm-moet` |
 | `W2_AUDIT_PATH` | `/tmp/pennyroyal-mapped-w2-audit.json` |
 
@@ -102,6 +106,20 @@ The runtime automatically resolves the selected visible GPU's PCI BDF and
 local NUMA node. Use `VLLM_MOE_W2_MAPPED_NUMA_NODE` only as an explicit guard
 or override on unusual systems. Multi-node systems fail closed if locality
 cannot be determined.
+
+### First cache generation and later starts
+
+On a clean cache root, the first start follows normal checkpoint-source
+construction and atomically writes one planes generation plus one delta pack.
+On later starts, cheap cache-key, metadata, coverage, and size checks authorize
+loader skipping. Four workers read at most 12 cached layers per batch directly
+into the runtime planes; no delta-to-base projection or W2 reconstruction is
+performed. Any incompatible or incomplete layer safely falls back to normal
+source construction.
+
+The validated direct-cache start loaded 77.625 GiB of planes in 55.898 s,
+completed model loading in 89.011 s, and reached API readiness in 130 s. Do not
+delete the cache directory while a server or cache writer is running.
 
 ## 4. Verify startup and the API
 
@@ -139,6 +157,6 @@ The published v4 OCI image is an immutable reproduction of the earlier
 three-mapped-layer DSpark-3/393,216-token candidate. It used runtime
 `95ef4a88c63c9ed88f2384977e05d788897af6c3` and was sealed by publication
 commit `0544e69e63dce5a9cf597797df3db140391ba832`. It is useful for checking
-container packaging and topology handling, but it is not the final a2131
+container packaging and topology handling, but it is not the final `e89479ec2`
 DSpark-4 one-million-token configuration. See
 [the container record](docs/container-ds4flash-0731-sm120.md).

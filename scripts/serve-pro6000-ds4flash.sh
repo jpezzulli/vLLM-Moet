@@ -10,6 +10,7 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-pennyroyal}"
 PORT="${PORT:-8001}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 MOET_STORE_DIR="${MOET_STORE_DIR:-/srv/models/moet-packs/DeepSeek-V4-Flash}"
+MOET_PLANES_CACHE_DIR="${MOET_PLANES_CACHE_DIR:-${MOET_STORE_DIR}}"
 CACHE_ROOT="${CACHE_ROOT:-/srv/cache/vllm-moet}"
 W2_AUDIT_PATH="${W2_AUDIT_PATH:-/tmp/pennyroyal-mapped-w2-audit.json}"
 
@@ -30,7 +31,8 @@ if [[ "${locked_kib}" != "unlimited" ]] && \
   fail "memlock limit ${locked_kib} KiB is too small for five mapped W2 layers"
 fi
 
-mkdir -p "${MOET_STORE_DIR}" "${CACHE_ROOT}/root-cache/flashinfer" \
+mkdir -p "${MOET_STORE_DIR}" "${MOET_PLANES_CACHE_DIR}" \
+  "${CACHE_ROOT}/root-cache/flashinfer" \
   "${CACHE_ROOT}/root-cache/torch_extensions" "${CACHE_ROOT}/triton" \
   "${CACHE_ROOT}/nvidia/ComputeCache"
 
@@ -53,6 +55,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export VLLM_USE_V2_MODEL_RUNNER=1
 export VLLM_USE_BREAKABLE_CUDAGRAPH=0
 export VLLM_USE_DEEP_GEMM=1
+export VLLM_ENFORCE_STRICT_TOOL_CALLING=true
 export VLLM_MOE_W2_CUBIT_DIR="${REPO_ROOT}/kernels/cubins-sm120"
 export VLLM_MOE_W2=1
 unset VLLM_MOE_W2_BASE_CACHE_GB
@@ -69,6 +72,10 @@ export VLLM_MOE_W2_GATE=0
 export VLLM_MOE_W2_AFRAG=1
 export VLLM_MOE_W2_FUSED_UNPERMUTE=0
 export VLLM_MOE_W2_STORE_DIR="${MOET_STORE_DIR}"
+export VLLM_MOE_W2_PLANES_CACHE="${MOET_PLANES_CACHE_DIR}"
+export VLLM_MOE_W2_FAST_LOAD=1
+export VLLM_MOE_W2_FAST_LOAD_WORKERS=4
+export VLLM_MOE_W2_FAST_LOAD_BATCH_LAYERS=12
 export VLLM_MOE_W2_MAPPED_LAYERS=38,39,40,41,42
 export VLLM_MOE_W2_MAPPED_AUDIT_PATH="${W2_AUDIT_PATH}"
 
@@ -89,7 +96,7 @@ exec "${VLLM_PYTHON}" -m vllm.entrypoints.cli.main serve \
   --load-format safetensors \
   --tokenizer-mode deepseek_v4 \
   --reasoning-parser deepseek_v4 \
-  --default-chat-template-kwargs '{"enable_thinking":true,"reasoning_effort":"max"}' \
+  --default-chat-template-kwargs '{"enable_thinking":true,"reasoning_effort":"high"}' \
   --override-generation-config '{"top_p":0.95}' \
   --enable-auto-tool-choice \
   --tool-call-parser deepseek_v4 \

@@ -6,7 +6,14 @@
 csrc/nvfp4_ds_mla/concat_and_cache_nvfp4_ds_mla.cu
 tests/model_executor/layers/test_moe_w2_mapped_host.py
 tests/model_executor/layers/test_moe_w2_persistence.py
+tests/tool_parsers/test_deepseekv4_tool_parser.py
+tests/tool_parsers/test_structural_tag_registry.py
+tests/v1/core/test_async_scheduler.py
+tests/v1/core/test_scheduler.py
 tests/v1/spec_decode/test_dspark_scheduler.py
+tests/v1/spec_decode/test_mtp_structured_output.py
+tests/v1/structured_output/test_reasoning_structured_output.py
+tests/v1/worker/test_kv_block_zeroer.py
 tools/nvfp4_flashinfer_sm120/README.md
 tools/nvfp4_flashinfer_sm120/nvfp4_expand.cuh
 tools/nvfp4_flashinfer_sm120/patch_flashinfer.py
@@ -23,6 +30,7 @@ vllm/model_executor/layers/quantization/utils/fp8_utils.py
 vllm/model_executor/layers/quantization/utils/moe_w2_bf12.py
 vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
 vllm/model_executor/layers/quantization/utils/moe_w2_delta.py
+vllm/model_executor/layers/quantization/utils/moe_w2_fast_loader.py
 vllm/model_executor/layers/quantization/utils/moe_w2_gate.py
 vllm/model_executor/layers/quantization/utils/moe_w2_looka.py
 vllm/model_executor/layers/quantization/utils/moe_w2_mapped_host.py
@@ -42,6 +50,9 @@ vllm/models/deepseek_v4/nvidia/mtp.py
 vllm/models/deepseek_v4/nvidia/ops/o_proj.py
 vllm/tokenizers/deepseek_v4.py
 vllm/tokenizers/deepseek_v4_encoding.py
+vllm/tool_parsers/abstract_tool_parser.py
+vllm/tool_parsers/deepseekv32_tool_parser.py
+vllm/tool_parsers/structural_tag_registry.py
 vllm/transformers_utils/configs/speculators/algos.py
 vllm/utils/flashinfer.py
 vllm/v1/attention/backends/flashinfer.py
@@ -60,6 +71,8 @@ vllm/v1/core/sched/scheduler.py
 vllm/v1/engine/core.py
 vllm/v1/kv_cache_interface.py
 vllm/v1/spec_decode/dynamic/utils.py
+vllm/v1/structured_output/__init__.py
+vllm/v1/structured_output/request.py
 vllm/v1/worker/gpu/cudagraph_utils.py
 vllm/v1/worker/gpu/input_batch.py
 vllm/v1/worker/gpu/model_runner.py
@@ -76,3 +89,4 @@ vllm/v1/worker/gpu/spec_decode/utils.py
 vllm/v1/worker/gpu_model_runner.py
 vllm/v1/worker/gpu_ubatch_wrapper.py
 vllm/v1/worker/gpu_worker.py
+vllm/v1/worker/utils.py

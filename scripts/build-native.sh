@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly VLLM_COMMIT="a2131dd7a944353e9323566107c72f4a17441024"
+readonly VLLM_COMMIT="e89479ec2c911b2864ed61df4b83668686d75b67"
 readonly DEEPGEMM_COMMIT="a6b593d2826719dcf4892609af7b84ee23aaf32a"
 readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 

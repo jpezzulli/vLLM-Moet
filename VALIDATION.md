@@ -1,8 +1,39 @@
 # Validation
 
 All results below are from one RTX PRO 6000 Blackwell Workstation Edition
-using DeepSeek-V4-Flash-0731 and runtime commit
-`a2131dd7a944353e9323566107c72f4a17441024`.
+using DeepSeek-V4-Flash-0731. Historical qualification used the earlier
+mapped-host runtime; the focused August 9 maintenance validation used runtime
+`752637ef1a78787e84bb33efe835b4c0b06e4918` without rerunning those suites.
+
+## Direct-cache startup maintenance validation
+
+One clean cache generation and one subsequent direct-cache start were run on
+the production DSpark-4/1M geometry. The final directory contained one delta
+pack generation and 46 layers with exactly four base-plane parts each; no
+temporary files or duplicate FP4 plane files remained.
+
+| Check | Result |
+|---|---:|
+| Eligibility probes | 46 layers, 0.045 s |
+| Direct base/planes loading | 77.625 GiB, five batches, 55.898 s |
+| Remaining target checkpoint load | 9.20 s |
+| DSpark checkpoint load | 3.84 s |
+| Total model load | 89.011 s |
+| Previous model-load baseline | 309.302 s |
+| Graph capture | 3 s |
+| Start to API ready | 130 s |
+| Runtime KV capacity | 1,058,256 tokens |
+
+Logs explicitly reported no CPU projection or reconstruction for every direct
+batch. Mapped layers 38–42 contained 9,059,696,640 bytes on NUMA node 0 with
+zero redundant complete GPU W2 bytes. `/health`, `/v1/models`, arithmetic
+(`37 + 58 = 95`), and one strict `lookup_order` tool call all passed. No OOM,
+crash, or parser-finalization error occurred.
+
+This was proportional maintenance validation, not a rerun of the frozen
+reasoning, 30-tool, or long-context suites. An xgrammar stop-boundary warning
+previously observed with strict structured output plus DSpark remains an
+unresolved qualification warning; the focused tool smoke completed normally.
 
 ## Runnable public validation
 

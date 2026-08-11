@@ -5659,10 +5659,10 @@ index 0000000000..34b0d7861c
 +    assert torch.equal(widths, torch.tensor([1], dtype=torch.int32))
 diff --git a/tests/v1/spec_decode/test_mtp_structured_output.py b/tests/v1/spec_decode/test_mtp_structured_output.py
 new file mode 100644
-index 0000000000..08965c1d34
+index 0000000000..673836bcb5
 --- /dev/null
 +++ b/tests/v1/spec_decode/test_mtp_structured_output.py
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,466 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""grammar_bitmask under spec-decode draft padding (#44006)."""
@@ -5870,7 +5870,9 @@ index 0000000000..08965c1d34
 +
 +
 +@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
-+def test_bitmask_post_reasoning_end_drafts_skip_grammar_advance(backend):
++def test_bitmask_post_reasoning_end_drafts_skip_grammar_advance(
++    backend, caplog, monkeypatch
++):
 +    """Post-marker drafts predate the bitmask and may be grammar-invalid;
 +    grammar_bitmask must skip the grammar advance instead of asserting.
 +    """
@@ -5902,7 +5904,24 @@ index 0000000000..08965c1d34
 +    # A token that the JSON grammar would reject as the first post-marker
 +    # token; without the fix grammar.accept_tokens fires the assertion.
 +    invalid_post = tokenizer.encode("z")[0]
-+    drafts = [pre, marker, invalid_post]
++    unreachable_post = tokenizer.encode('"')[0]
++    drafts = [pre, marker, invalid_post, unreachable_post]
++
++    validate_calls = []
++    accept_calls = []
++    original_validate = grammar.validate_tokens
++    original_accept = grammar.accept_tokens
++
++    def validate_spy(tokens):
++        validate_calls.append(list(tokens))
++        return original_validate(tokens)
++
++    def accept_spy(req_id, tokens):
++        accept_calls.append((req_id, list(tokens)))
++        return original_accept(req_id, tokens)
++
++    monkeypatch.setattr(grammar, "validate_tokens", validate_spy)
++    monkeypatch.setattr(grammar, "accept_tokens", accept_spy)
 +
 +    bitmask = manager.grammar_bitmask(
 +        requests={request.request_id: request},
@@ -5916,6 +5935,94 @@ index 0000000000..08965c1d34
 +    assert not (bitmask[2] == -1).all()
 +    # Grammar must not have advanced through the unvalidated draft.
 +    assert not grammar.is_terminated()
++    assert validate_calls == [[invalid_post]]
++    assert accept_calls == []
++    assert "Failed to advance FSM" not in caplog.text
++
++
++@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
++def test_bitmask_valid_post_reasoning_draft_advances_then_rolls_back(
++    backend, caplog, monkeypatch
++):
++    """A valid post-marker draft is persisted for the next bitmask row, then
++    rolled back so repeated scheduler probes remain idempotent.
++    """
++    tokenizer, manager, request, _ = _make_manager_and_request(backend, prompt_str="{")
++    grammar = request.structured_output_request.grammar
++    assert grammar.accept_tokens(request.request_id, tokenizer.encode("{"))
++    processed_before = getattr(grammar, "num_processed_tokens", None)
++
++    marker = tokenizer.encode("\n")[0]
++    manager.reasoner_cls = _MarkerReasoner
++    request.structured_output_request.reasoner = _MarkerReasoner(marker)
++    request.structured_output_request.reasoning_ended = False
++
++    valid_post = tokenizer.encode('"')[0]
++    drafts = [tokenizer.encode(" ")[0], marker, valid_post]
++    validate_calls = []
++    accept_calls = []
++    original_validate = grammar.validate_tokens
++    original_accept = grammar.accept_tokens
++
++    def validate_spy(tokens):
++        validate_calls.append(list(tokens))
++        return original_validate(tokens)
++
++    def accept_spy(req_id, tokens):
++        accept_calls.append((req_id, list(tokens)))
++        return original_accept(req_id, tokens)
++
++    monkeypatch.setattr(grammar, "validate_tokens", validate_spy)
++    monkeypatch.setattr(grammar, "accept_tokens", accept_spy)
++
++    first = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++    second = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++
++    assert first is not None and second is not None
++    assert (first == second).all()
++    assert validate_calls == [[valid_post], [valid_post]]
++    assert accept_calls == [
++        (request.request_id, [valid_post]),
++        (request.request_id, [valid_post]),
++    ]
++    if processed_before is not None:
++        assert grammar.num_processed_tokens == processed_before
++    assert not grammar.is_terminated()
++    assert "Failed to advance FSM" not in caplog.text
++
++
++def test_bitmask_post_reasoning_validation_accept_mismatch_fails_closed(monkeypatch):
++    """A backend state mismatch is not an expected speculative rejection."""
++    tokenizer, manager, request, _ = _make_manager_and_request(
++        "xgrammar", prompt_str="{"
++    )
++    grammar = request.structured_output_request.grammar
++    assert grammar.accept_tokens(request.request_id, tokenizer.encode("{"))
++
++    marker = tokenizer.encode("\n")[0]
++    manager.reasoner_cls = _MarkerReasoner
++    request.structured_output_request.reasoner = _MarkerReasoner(marker)
++    request.structured_output_request.reasoning_ended = False
++    post = tokenizer.encode('"')[0]
++    drafts = [tokenizer.encode(" ")[0], marker, post]
++
++    monkeypatch.setattr(grammar, "validate_tokens", lambda tokens: list(tokens))
++    monkeypatch.setattr(grammar, "accept_tokens", lambda req_id, tokens: False)
++
++    with pytest.raises(AssertionError):
++        manager.grammar_bitmask(
++            requests={request.request_id: request},
++            structured_output_request_ids=[request.request_id],
++            scheduled_spec_decode_tokens={request.request_id: drafts},
++        )
 +
 +
 +@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
@@ -23742,7 +23849,7 @@ index 9f46cbd242..ccb4e0826e 100644
  
          if self.pass_hidden_states_to_model:
 diff --git a/vllm/v1/structured_output/__init__.py b/vllm/v1/structured_output/__init__.py
-index 30921f3d74..6ccb08fae2 100644
+index 30921f3d74..020a7f3bf0 100644
 --- a/vllm/v1/structured_output/__init__.py
 +++ b/vllm/v1/structured_output/__init__.py
 @@ -2,12 +2,11 @@
@@ -23795,7 +23902,7 @@ index 30921f3d74..6ccb08fae2 100644
  
      def _fill_bitmasks(
          self, batch: Iterable[tuple[StructuredOutputGrammar, int, bool]]
-@@ -272,23 +276,69 @@ class StructuredOutputManager:
+@@ -272,23 +276,90 @@ class StructuredOutputManager:
                  grammar = structured_output_request.grammar
                  apply_bitmask = self.should_fill_bitmask(request)
  
@@ -23810,6 +23917,7 @@ index 30921f3d74..6ccb08fae2 100644
 +
                  state_advancements = 0
 +                post_reasoning_end_in_window = False
++                post_reasoning_prefix_valid = True
                  req_tokens = scheduled_spec_decode_tokens.get(req_id, ())
 -                if self.vllm_config.model_config.is_diffusion and req_tokens:
 -                    # Diffusion LLMs don't sample a bonus token after the
@@ -23825,6 +23933,9 @@ index 30921f3d74..6ccb08fae2 100644
 -                        # Stop advancing the grammar once we hit a padding token.
                          apply_bitmask = False
 -                    if apply_bitmask and not grammar.is_terminated():
+-                        accepted = grammar.accept_tokens(req_id, [token])
+-                        assert accepted, (token, req_id, scheduled_spec_decode_tokens)
+-                        state_advancements += 1
 +                        advance_grammar = False
 +                    elif (
 +                        detect_reasoning_end
@@ -23848,9 +23959,27 @@ index 30921f3d74..6ccb08fae2 100644
 +                            advance_grammar = False
 +                            post_reasoning_end_in_window = True
 +                    if advance_grammar and not grammar.is_terminated():
-                         accepted = grammar.accept_tokens(req_id, [token])
--                        assert accepted, (token, req_id, scheduled_spec_decode_tokens)
--                        state_advancements += 1
++                        if post_reasoning_end_in_window:
++                            # These drafts were produced before the grammar
++                            # became active. Probe without logging an expected
++                            # rejection, then persist only valid transitions.
++                            # Once one draft is rejected, the speculative
++                            # suffix is unreachable and must not be probed
++                            # against a state that omitted that draft.
++                            accepted = post_reasoning_prefix_valid and (
++                                grammar.validate_tokens([token]) == [token]
++                            )
++                            if not accepted:
++                                post_reasoning_prefix_valid = False
++                            elif not grammar.accept_tokens(req_id, [token]):
++                                # Validation is non-advancing. If the same
++                                # transition cannot then be persisted, fail
++                                # closed rather than hiding inconsistent state.
++                                raise AssertionError(
++                                    (token, req_id, scheduled_spec_decode_tokens)
++                                )
++                        else:
++                            accepted = grammar.accept_tokens(req_id, [token])
 +                        if accepted:
 +                            state_advancements += 1
 +                        elif not post_reasoning_end_in_window:
@@ -23876,7 +24005,7 @@ index 30921f3d74..6ccb08fae2 100644
                      cumulative_index += 1
                  if state_advancements > 0:
                      grammar.rollback(state_advancements)
-@@ -322,7 +372,11 @@ class StructuredOutputManager:
+@@ -322,7 +393,11 @@ class StructuredOutputManager:
              return request.structured_output_request.reasoning_ended
          return True
  
@@ -23889,7 +24018,7 @@ index 30921f3d74..6ccb08fae2 100644
          if not request.use_structured_output:
              return False
  
-@@ -345,33 +399,86 @@ class StructuredOutputManager:
+@@ -345,33 +420,86 @@ class StructuredOutputManager:
          if structured_req.reasoning_ended:
              return True
  

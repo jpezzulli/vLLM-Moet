@@ -23,6 +23,7 @@ tests/tool_parsers/test_deepseekv4_tool_parser.py
 tests/tool_parsers/test_structural_tag_registry.py
 tests/v1/core/test_async_scheduler.py
 tests/v1/core/test_scheduler.py
+tests/v1/core/test_structured_output_terminated_grammar.py
 tests/v1/spec_decode/test_dspark_scheduler.py
 tests/v1/spec_decode/test_mtp_structured_output.py
 tests/v1/spec_decode/test_parallel_drafting_token_id.py

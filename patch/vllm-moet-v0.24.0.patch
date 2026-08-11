@@ -5455,10 +5455,18 @@ index 5e9c9280db..8253a8422e 100644
      scheduler.running = [request]
      scheduler.waiting = Mock()
 diff --git a/tests/v1/core/test_scheduler.py b/tests/v1/core/test_scheduler.py
-index dcfbfd5b1b..43141badac 100644
+index dcfbfd5b1b..c3a922b14e 100644
 --- a/tests/v1/core/test_scheduler.py
 +++ b/tests/v1/core/test_scheduler.py
-@@ -2777,6 +2777,9 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
+@@ -2769,6 +2769,7 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
+     )
+     request.structured_output_request = Mock()
+     request.structured_output_request.grammar = Mock()
++    request.structured_output_request.grammar.is_terminated.return_value = False
+     request.structured_output_request.grammar.accept_tokens.return_value = False
+     request.status = RequestStatus.RUNNING
+     request.num_computed_tokens = request.num_tokens
+@@ -2777,6 +2778,9 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
      scheduler.connector = None
      scheduler.structured_output_manager = Mock()
      scheduler.structured_output_manager.should_advance.return_value = True
@@ -5468,6 +5476,139 @@ index dcfbfd5b1b..43141badac 100644
      scheduler.requests = {request.request_id: request}
      scheduler.running = [request]
      scheduler.waiting = Mock()
+diff --git a/tests/v1/core/test_structured_output_terminated_grammar.py b/tests/v1/core/test_structured_output_terminated_grammar.py
+new file mode 100644
+index 0000000000..5831c0d8a5
+--- /dev/null
++++ b/tests/v1/core/test_structured_output_terminated_grammar.py
+@@ -0,0 +1,127 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Regression tests for terminated structured-output grammars (#42853)."""
++
++from unittest.mock import Mock
++
++import pytest
++
++from vllm.sampling_params import SamplingParams
++from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
++from vllm.v1.core.sched.scheduler import Scheduler
++from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
++from vllm.v1.request import Request, RequestStatus
++
++pytestmark = pytest.mark.cpu_test
++EOS_TOKEN_ID = 50256
++
++
++def _make_running_request(request_id: str = "0") -> Request:
++    sampling_params = SamplingParams(ignore_eos=True, max_tokens=4)
++    sampling_params.update_from_generation_config({}, EOS_TOKEN_ID)
++    request = Request(
++        request_id=request_id,
++        prompt_token_ids=[0, 1],
++        mm_features=None,
++        sampling_params=sampling_params,
++        pooling_params=None,
++    )
++    request.status = RequestStatus.RUNNING
++    request.num_computed_tokens = request.num_tokens
++    return request
++
++
++def _make_scheduler(request: Request) -> Scheduler:
++    scheduler = object.__new__(Scheduler)
++    scheduler.perf_metrics = None
++    scheduler.connector = None
++    scheduler.structured_output_manager = Mock()
++    scheduler.structured_output_manager.should_advance.return_value = True
++    scheduler.structured_output_manager.trim_reasoning_for_advance.side_effect = (
++        lambda request, new_token_ids: new_token_ids
++    )
++    scheduler.requests = {request.request_id: request}
++    scheduler.running = [request]
++    scheduler.waiting = Mock()
++    scheduler.kv_cache_manager = Mock()
++    scheduler.kv_cache_manager.take_events.return_value = None
++    scheduler.kv_event_publisher = Mock()
++    scheduler.finished_req_ids = set()
++    scheduler.finished_req_ids_dict = None
++    scheduler.vllm_config = Mock()
++    scheduler.vllm_config.model_config.enable_return_routed_experts = False
++    scheduler.enable_return_routed_experts = False
++    scheduler.recompute_kv_load_failures = False
++    scheduler.defer_block_free = False
++    scheduler.make_stats = Mock(return_value=None)
++    scheduler.max_model_len = 128
++
++    def free_request(req: Request, delay_free_blocks: bool = False):
++        scheduler.finished_req_ids.add(req.request_id)
++        scheduler.requests.pop(req.request_id, None)
++
++    scheduler._free_request = Mock(side_effect=free_request)
++    return scheduler
++
++
++def test_scheduler_does_not_advance_terminated_grammar():
++    request = _make_running_request()
++    grammar = Mock()
++    grammar.is_terminated.return_value = True
++    grammar.accept_tokens.return_value = False
++    request.structured_output_request = Mock(grammar=grammar)
++    scheduler = _make_scheduler(request)
++
++    scheduler_output = SchedulerOutput(
++        scheduled_new_reqs=[],
++        scheduled_cached_reqs=CachedRequestData.make_empty(),
++        num_scheduled_tokens={request.request_id: 1},
++        total_num_scheduled_tokens=1,
++        scheduled_encoder_inputs={},
++        scheduled_spec_decode_tokens={},
++        num_common_prefix_blocks=[],
++        finished_req_ids=set(),
++        free_encoder_mm_hashes=[],
++    )
++    model_output = ModelRunnerOutput(
++        req_ids=[request.request_id],
++        req_id_to_index={request.request_id: 0},
++        sampled_token_ids=[[123]],
++        logprobs=None,
++        prompt_logprobs_dict={},
++        pooler_output=[],
++    )
++
++    scheduler.update_from_output(scheduler_output, model_output)
++
++    grammar.accept_tokens.assert_not_called()
++    assert request.status != RequestStatus.FINISHED_ERROR
++
++
++@pytest.mark.parametrize("in_output", [False, True])
++def test_draft_validation_skips_terminated_grammar(in_output: bool):
++    request = _make_running_request()
++    request.is_prefill_chunk = False
++    grammar = Mock()
++    grammar.is_terminated.return_value = True
++    request.structured_output_request = Mock(grammar=grammar)
++    scheduler = _make_scheduler(request)
++    draft = DraftTokenIds(
++        req_ids=[request.request_id],
++        draft_token_ids=[[10, 20]],
++    )
++
++    if in_output:
++        scheduler_output = Mock(
++            scheduled_spec_decode_tokens={request.request_id: [-1, -1]}
++        )
++        scheduler.update_draft_token_ids_in_output(draft, scheduler_output)
++        assert scheduler_output.scheduled_spec_decode_tokens[request.request_id] == [
++            10,
++            20,
++        ]
++    else:
++        scheduler.update_draft_token_ids(draft)
++        assert request.spec_token_ids == [10, 20]
++
++    grammar.validate_tokens.assert_not_called()
 diff --git a/tests/v1/spec_decode/test_dspark_scheduler.py b/tests/v1/spec_decode/test_dspark_scheduler.py
 new file mode 100644
 index 0000000000..34b0d7861c
@@ -5518,10 +5659,10 @@ index 0000000000..34b0d7861c
 +    assert torch.equal(widths, torch.tensor([1], dtype=torch.int32))
 diff --git a/tests/v1/spec_decode/test_mtp_structured_output.py b/tests/v1/spec_decode/test_mtp_structured_output.py
 new file mode 100644
-index 0000000000..619f3ad6fd
+index 0000000000..08965c1d34
 --- /dev/null
 +++ b/tests/v1/spec_decode/test_mtp_structured_output.py
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,359 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""grammar_bitmask under spec-decode draft padding (#44006)."""
@@ -5615,6 +5756,22 @@ index 0000000000..619f3ad6fd
 +    assert bitmask is not None
 +    assert bitmask.shape[0] == NUM_SPEC_TOKENS + 1
 +    assert not grammar.is_terminated()
++
++
++def test_xgrammar_accept_tokens_stops_after_speculative_eos():
++    """Trailing speculative tokens do not advance a terminated matcher."""
++    tokenizer, _, request, prompt = _make_manager_and_request("xgrammar")
++    grammar = request.structured_output_request.grammar
++
++    assert grammar.accept_tokens(request.request_id, prompt)
++    processed_before_eos = grammar.num_processed_tokens
++
++    eos = tokenizer.eos_token_id
++    trailing_draft = tokenizer.encode("\n")[0]
++    assert grammar.accept_tokens(request.request_id, [eos, trailing_draft])
++
++    assert grammar.is_terminated()
++    assert grammar.num_processed_tokens == processed_before_eos + 1
 +
 +
 +@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
@@ -5910,19 +6067,24 @@ index 0000000000..4073be01e2
 +        proposer._init_parallel_drafting_params()
 diff --git a/tests/v1/structured_output/test_backend_xgrammar_stop_tokens.py b/tests/v1/structured_output/test_backend_xgrammar_stop_tokens.py
 new file mode 100644
-index 0000000000..15a216c349
+index 0000000000..56d3519021
 --- /dev/null
 +++ b/tests/v1/structured_output/test_backend_xgrammar_stop_tokens.py
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,82 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from unittest.mock import Mock
 +
 +import pytest
 +from transformers import AutoTokenizer
 +
 +from vllm.config import DeviceConfig, StructuredOutputsConfig, VllmConfig
 +from vllm.v1.structured_output.backend_types import StructuredOutputOptions
-+from vllm.v1.structured_output.backend_xgrammar import XgrammarBackend
++from vllm.v1.structured_output.backend_xgrammar import (
++    XgrammarBackend,
++    XgrammarGrammar,
++)
 +
 +TOKENIZER = "openai-community/gpt2"
 +VOCAB_SIZE = 50257
@@ -5980,6 +6142,17 @@ index 0000000000..15a216c349
 +    assert _token_allowed(bm_override[0], LETTER)
 +    assert _token_allowed(bm_default[0], EOS)
 +    assert _token_allowed(bm_override[0], EOS)
++
++
++def test_rejected_token_synchronizes_terminated_state():
++    """A rejected token cannot leave the cached matcher state stale."""
++    matcher = Mock()
++    matcher.is_terminated.side_effect = [False, True]
++    matcher.accept_token.return_value = False
++    grammar = XgrammarGrammar(vocab_size=1, matcher=matcher, ctx=Mock())
++
++    assert not grammar.accept_tokens("req", [7])
++    assert grammar.is_terminated()
 diff --git a/tests/v1/structured_output/test_reasoning_structured_output.py b/tests/v1/structured_output/test_reasoning_structured_output.py
 index 861e919c10..ad5f1d5d79 100644
 --- a/tests/v1/structured_output/test_reasoning_structured_output.py
@@ -23213,7 +23386,7 @@ index dbe3c5705d..f12d719fba 100644
      _fwd_grouped_kernel_stage1[grid](
          q,
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 90d93a110c..20aef47c22 100644
+index 90d93a110c..d474d29b2d 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -57,7 +57,10 @@ from vllm.v1.metrics.perf import ModelMetrics, PerfStats
@@ -23254,7 +23427,7 @@ index 90d93a110c..20aef47c22 100644
  
              # Free encoder inputs only after the step has actually executed.
              if request.has_encoder_inputs:
-@@ -1596,17 +1611,28 @@ class Scheduler(SchedulerInterface):
+@@ -1596,17 +1611,30 @@ class Scheduler(SchedulerInterface):
                  request.status = RequestStatus.FINISHED_STOPPED
                  stopped = True
  
@@ -23277,8 +23450,10 @@ index 90d93a110c..20aef47c22 100644
 +                        request, new_token_ids
 +                    )
 +                )
-+                if advance_token_ids and not grammar.accept_tokens(
-+                    req_id, advance_token_ids
++                if (
++                    advance_token_ids
++                    and not grammar.is_terminated()
++                    and not grammar.accept_tokens(req_id, advance_token_ids)
                  ):
                      logger.error(
                          "Unexpected: grammar rejected tokens %s for request %s. "
@@ -23288,7 +23463,28 @@ index 90d93a110c..20aef47c22 100644
                          req_id,
                      )
                      request.status = RequestStatus.FINISHED_ERROR
-@@ -2263,6 +2289,17 @@ class Scheduler(SchedulerInterface):
+@@ -1916,7 +1944,9 @@ class Scheduler(SchedulerInterface):
+             # Add newly generated spec token ids to the request.
+             if self.structured_output_manager.should_advance(request):
+                 metadata = request.structured_output_request
+-                spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)  # type: ignore[union-attr]
++                assert metadata is not None and metadata.grammar is not None
++                if not metadata.grammar.is_terminated():
++                    spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)
+             request.spec_token_ids = spec_token_ids
+ 
+     def update_draft_token_ids_in_output(
+@@ -1946,7 +1976,8 @@ class Scheduler(SchedulerInterface):
+             if self.structured_output_manager.should_advance(request):
+                 metadata = request.structured_output_request
+                 assert metadata is not None and metadata.grammar is not None
+-                spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)
++                if not metadata.grammar.is_terminated():
++                    spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)
+             # Pad to original number of spec tokens.
+             num_invalid_tokens = orig_num_spec_tokens - len(spec_token_ids)
+             if num_invalid_tokens:
+@@ -2263,6 +2294,17 @@ class Scheduler(SchedulerInterface):
              perf_stats=perf_stats,
          )
  
@@ -23875,7 +24071,7 @@ index 5c09b7b063..129e86a95e 100644
          Returns:
              StructuredOutputGrammar: The compiled structured output grammar.
 diff --git a/vllm/v1/structured_output/backend_xgrammar.py b/vllm/v1/structured_output/backend_xgrammar.py
-index 4f199a1a27..58b726bf72 100644
+index 4f199a1a27..b4a1eaa6de 100644
 --- a/vllm/v1/structured_output/backend_xgrammar.py
 +++ b/vllm/v1/structured_output/backend_xgrammar.py
 @@ -76,7 +76,10 @@ class XgrammarBackend(StructuredOutputBackend):
@@ -23898,6 +24094,22 @@ index 4f199a1a27..58b726bf72 100644
                  max_rollback_tokens=self.num_speculative_tokens,
              ),
              vocab_size=self.vocab_size,
+@@ -158,7 +162,15 @@ class XgrammarGrammar(StructuredOutputGrammar):
+         if self._is_terminated:
+             return False
+         for token in tokens:
++            if self.matcher.is_terminated():
++                # A speculative batch may contain tokens after the stop token.
++                # Do not feed those trailing drafts to a terminated matcher.
++                self._is_terminated = True
++                break
+             if not self.matcher.accept_token(token):
++                # Keep the cached state synchronized if the matcher terminates
++                # while rejecting a token (vllm-project/vllm#37506).
++                self._is_terminated = self.matcher.is_terminated()
+                 logger.error(
+                     "Failed to advance FSM for request %s "
+                     "for tokens %s. Please file an issue.",
 diff --git a/vllm/v1/structured_output/request.py b/vllm/v1/structured_output/request.py
 index dfa8c7efca..f9ab54a047 100644
 --- a/vllm/v1/structured_output/request.py

@@ -17,6 +17,7 @@ tests/parser/engine/test_replay.py
 tests/parser/engine/test_token_id_scanner.py
 tests/parser/engine/trace_builder.py
 tests/reasoning/test_deepseekv3_reasoning_parser.py
+tests/tokenizers_/test_deepseek_v4.py
 tests/tool_parsers/test_deepseekv32_tool_parser.py
 tests/tool_parsers/test_deepseekv4_tool_parser.py
 tests/tool_parsers/test_structural_tag_registry.py
@@ -24,6 +25,8 @@ tests/v1/core/test_async_scheduler.py
 tests/v1/core/test_scheduler.py
 tests/v1/spec_decode/test_dspark_scheduler.py
 tests/v1/spec_decode/test_mtp_structured_output.py
+tests/v1/spec_decode/test_parallel_drafting_token_id.py
+tests/v1/structured_output/test_backend_xgrammar_stop_tokens.py
 tests/v1/structured_output/test_reasoning_structured_output.py
 tests/v1/worker/test_kv_block_zeroer.py
 tools/nvfp4_flashinfer_sm120/README.md
@@ -99,7 +102,13 @@ vllm/v1/core/sched/scheduler.py
 vllm/v1/engine/core.py
 vllm/v1/kv_cache_interface.py
 vllm/v1/spec_decode/dynamic/utils.py
+vllm/v1/spec_decode/llm_base_proposer.py
 vllm/v1/structured_output/__init__.py
+vllm/v1/structured_output/backend_guidance.py
+vllm/v1/structured_output/backend_lm_format_enforcer.py
+vllm/v1/structured_output/backend_outlines.py
+vllm/v1/structured_output/backend_types.py
+vllm/v1/structured_output/backend_xgrammar.py
 vllm/v1/structured_output/request.py
 vllm/v1/worker/gpu/cudagraph_utils.py
 vllm/v1/worker/gpu/input_batch.py

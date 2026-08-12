@@ -3,6 +3,7 @@
 # A file DISAPPEARING from this list means a line of work exists in the
 # patch but not in the vllm fork branch the patch is generated from —
 # merge it into the branch first; do not ship the regeneration.
+.github/workflows/pre-commit.yml
 csrc/nvfp4_ds_mla/concat_and_cache_nvfp4_ds_mla.cu
 docs/features/tool_calling.md
 tests/model_executor/layers/test_moe_w2_mapped_host.py

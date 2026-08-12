@@ -1,3 +1,60 @@
+diff --git a/.github/workflows/pre-commit.yml b/.github/workflows/pre-commit.yml
+index 2f3e3e6e52..3f31dfe00f 100644
+--- a/.github/workflows/pre-commit.yml
++++ b/.github/workflows/pre-commit.yml
+@@ -2,7 +2,7 @@ name: pre-commit
+ 
+ on:
+   pull_request:
+-    types: [opened, synchronize, reopened, labeled]
++    types: [opened, synchronize, reopened]
+   push:
+     branches: [main]
+ 
+@@ -15,37 +15,13 @@ permissions:
+   pull-requests: read
+ 
+ jobs:
+-  pre-run-check:
+-    if: github.event_name == 'pull_request'
+-    runs-on: ubuntu-latest
+-    steps:
+-    - name: Check PR label and author merge count
+-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+-      with:
+-        script: |
+-          const { data: pr } = await github.rest.pulls.get({
+-            ...context.repo,
+-            pull_number: context.payload.pull_request.number,
+-          });
+-
+-          const hasReadyLabel = pr.labels.some(l => l.name === 'ready');
+-          const hasVerifiedLabel = pr.labels.some(l => l.name === 'verified');
+-
+-          const { data: mergedPRs } = await github.rest.search.issuesAndPullRequests({
+-            q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:merged author:${pr.user.login}`,
+-            per_page: 4,
+-          });
+-          const mergedCount = mergedPRs.total_count;
+-
+-          if (hasReadyLabel || hasVerifiedLabel || mergedCount >= 4) {
+-            core.info(`Check passed: verified label=${hasVerifiedLabel}, ready label=${hasReadyLabel}, 4+ merged PRs=${mergedCount >= 4}`);
+-          } else {
+-            core.setFailed(`PR must have the 'verified' or 'ready' (which also triggers tests) label or the author must have at least 4 merged PRs (found ${mergedCount}).`);
+-          }
+-
+   pre-commit:
+-    needs: pre-run-check
+-    if: always() && (needs.pre-run-check.result == 'success' || needs.pre-run-check.result == 'skipped')
++    # This is a public fork backed by a private self-hosted runner. Run PR code
++    # only for owner-authored branches in this repository; never for forks.
++    if: >-
++      github.event_name == 'push' ||
++      (github.event.pull_request.head.repo.full_name == github.repository &&
++      github.event.pull_request.user.login == github.repository_owner)
+     runs-on: [self-hosted, linux, x64, vllm-runners]
+     steps:
+     - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 diff --git a/csrc/nvfp4_ds_mla/concat_and_cache_nvfp4_ds_mla.cu b/csrc/nvfp4_ds_mla/concat_and_cache_nvfp4_ds_mla.cu
 new file mode 100644
 index 0000000000..c4b64f25bf

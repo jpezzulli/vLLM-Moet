@@ -1,6 +1,6 @@
 diff --git a/csrc/nvfp4_ds_mla/concat_and_cache_nvfp4_ds_mla.cu b/csrc/nvfp4_ds_mla/concat_and_cache_nvfp4_ds_mla.cu
 new file mode 100644
-index 000000000..c4b64f25b
+index 0000000000..c4b64f25bf
 --- /dev/null
 +++ b/csrc/nvfp4_ds_mla/concat_and_cache_nvfp4_ds_mla.cu
 @@ -0,0 +1,171 @@
@@ -176,7 +176,7 @@ index 000000000..c4b64f25b
 +        "Write MLA KV into the packed nvfp4_ds_mla layout (352 B/token)");
 +}
 diff --git a/docs/features/tool_calling.md b/docs/features/tool_calling.md
-index ae6523191..49c7223ca 100644
+index ae65231919..49c7223cae 100644
 --- a/docs/features/tool_calling.md
 +++ b/docs/features/tool_calling.md
 @@ -338,6 +338,32 @@ Supported models:
@@ -214,7 +214,7 @@ index ae6523191..49c7223ca 100644
  Supported models:
 diff --git a/tests/model_executor/layers/test_moe_w2_mapped_host.py b/tests/model_executor/layers/test_moe_w2_mapped_host.py
 new file mode 100644
-index 000000000..9901d1c96
+index 0000000000..9901d1c96c
 --- /dev/null
 +++ b/tests/model_executor/layers/test_moe_w2_mapped_host.py
 @@ -0,0 +1,249 @@
@@ -469,7 +469,7 @@ index 000000000..9901d1c96
 +        abort.assert_called_once_with(40)
 diff --git a/tests/model_executor/layers/test_moe_w2_persistence.py b/tests/model_executor/layers/test_moe_w2_persistence.py
 new file mode 100644
-index 000000000..b4155cc7f
+index 0000000000..b4155cc7f3
 --- /dev/null
 +++ b/tests/model_executor/layers/test_moe_w2_persistence.py
 @@ -0,0 +1,688 @@
@@ -1162,7 +1162,7 @@ index 000000000..b4155cc7f
 +    torch.cuda.synchronize()
 +    assert torch.equal(replay_a, replay_b)
 diff --git a/tests/parser/engine/conftest.py b/tests/parser/engine/conftest.py
-index 47a2ad0b7..157234c85 100644
+index 47a2ad0b7d..157234c852 100644
 --- a/tests/parser/engine/conftest.py
 +++ b/tests/parser/engine/conftest.py
 @@ -15,8 +15,17 @@ def should_do_global_cleanup_after_test() -> bool:
@@ -1196,7 +1196,7 @@ index 47a2ad0b7..157234c85 100644
  
  
 diff --git a/tests/parser/engine/replay_harness.py b/tests/parser/engine/replay_harness.py
-index 9abd460f7..301433ba5 100644
+index 9abd460f76..301433ba5e 100644
 --- a/tests/parser/engine/replay_harness.py
 +++ b/tests/parser/engine/replay_harness.py
 @@ -62,6 +62,7 @@ class MockTokenizer:
@@ -1270,7 +1270,7 @@ index 9abd460f7..301433ba5 100644
      tokens: list[tuple[int, str]],
 diff --git a/tests/parser/engine/test_deepseek_v32.py b/tests/parser/engine/test_deepseek_v32.py
 new file mode 100644
-index 000000000..55ceb0ba4
+index 0000000000..55ceb0ba41
 --- /dev/null
 +++ b/tests/parser/engine/test_deepseek_v32.py
 @@ -0,0 +1,760 @@
@@ -2036,10 +2036,10 @@ index 000000000..55ceb0ba4
 +        assert args == {"k": "v"}
 diff --git a/tests/parser/engine/test_deepseek_v4.py b/tests/parser/engine/test_deepseek_v4.py
 new file mode 100644
-index 000000000..d2dd86c6d
+index 0000000000..e99786cfd0
 --- /dev/null
 +++ b/tests/parser/engine/test_deepseek_v4.py
-@@ -0,0 +1,1917 @@
+@@ -0,0 +1,2018 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""Tests for DeepSeek V4-specific parser engine semantics."""
@@ -2281,7 +2281,9 @@ index 000000000..d2dd86c6d
 +
 +class TestThinkTagAbsorption:
 +    def test_bare_think_end_not_leaked(self, mock_tokenizer):
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        chunks = ["</think>", "Here is the direct answer."]
 +        reasoning, content = simulate_reasoning_streaming(parser, chunks)
 +        assert reasoning == ""
@@ -2308,7 +2310,9 @@ index 000000000..d2dd86c6d
 +
 +class TestMissingInvokeEnd:
 +    def test_non_streaming(self, mock_tokenizer, mock_request):
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        text = (
 +            f"{DSML_TOOL_START}"
 +            f"{DSML_INVOKE_PREFIX}get_weather{DSML_INVOKE_NAME_END}\n"
@@ -2324,7 +2328,9 @@ index 000000000..d2dd86c6d
 +        assert args == {"location": "NYC"}
 +
 +    def test_streaming_with_trailing_content(self, mock_tokenizer, mock_request):
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        chunks = [
 +            DSML_TOOL_START,
 +            (
@@ -2363,7 +2369,11 @@ index 000000000..d2dd86c6d
 +        return _make_tool("get_weather", {"location": {"type": "string"}})
 +
 +    def _declared_parser(self, mock_tokenizer, mock_request, *tools):
-+        parser = DeepSeekV4Parser(mock_tokenizer, tools=list(tools))
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            tools=list(tools),
++            chat_template_kwargs={"thinking": False},
++        )
 +        mock_request.tools = list(tools)
 +        return parser
 +
@@ -2478,7 +2488,9 @@ index 000000000..d2dd86c6d
 +        assert result.tool_calls[1].function.name == "get_time"
 +
 +    def test_plain_content_unaffected(self, mock_tokenizer, mock_request):
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        text = 'Use <invoke name="foo"> style tags to call tools.'
 +        result = parser.extract_tool_calls(text, mock_request)
 +
@@ -2489,7 +2501,9 @@ index 000000000..d2dd86c6d
 +    def test_partial_marker_mention_stays_content(self, mock_tokenizer, mock_request):
 +        """A DSML-like fragment that never completes the invoke marker
 +        must be flushed as content, not swallowed."""
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        text = "The prefix <｜DSML｜invoke is reserved."
 +        result = parser.extract_tool_calls(text, mock_request)
 +
@@ -2502,7 +2516,9 @@ index 000000000..d2dd86c6d
 +        """An invoke inside the V3.2-style function_calls wrapper stays
 +        plain content: the orphan fallback must not fire inside a
 +        foreign wrapper."""
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        text = _tool_calls(
 +            _invoke("get_weather", ("location", "true", "NYC")),
 +        ).replace("tool_calls", "function_calls")
@@ -2517,7 +2533,9 @@ index 000000000..d2dd86c6d
 +    ):
 +        """A foreign wrapper that never closes must not disable native
 +        tool parsing: the token backed tool_calls wrapper still wins."""
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        text = (
 +            DSML_FOREIGN_TOOL_START
 +            + "\nStray foreign text.\n"
@@ -2537,7 +2555,9 @@ index 000000000..d2dd86c6d
 +    ):
 +        """A request that declared no tools can never accept a recovered
 +        name, so the orphan invoke stays plain content."""
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        text = self._orphan_invoke()
 +        result = parser.extract_tool_calls(text, mock_request)
 +
@@ -2568,7 +2588,11 @@ index 000000000..d2dd86c6d
 +        return _make_tool("get_weather", {"location": {"type": "string"}})
 +
 +    def _declared_parser(self, mock_tokenizer, mock_request, *tools):
-+        parser = DeepSeekV4Parser(mock_tokenizer, tools=list(tools))
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            tools=list(tools),
++            chat_template_kwargs={"thinking": False},
++        )
 +        mock_request.tools = list(tools)
 +        return parser
 +
@@ -2637,7 +2661,9 @@ index 000000000..d2dd86c6d
 +        assert DSML_INVOKE_PREFIX + "made_up_tool" in result.content
 +
 +    def test_no_tools_name_with_space_stays_content(self, mock_tokenizer, mock_request):
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        text = DSML_INVOKE_PREFIX + "not a name" + DSML_INVOKE_NAME_END + " more text."
 +        result = parser.extract_tool_calls(text, mock_request)
 +
@@ -2645,7 +2671,9 @@ index 000000000..d2dd86c6d
 +        assert result.content == text
 +
 +    def test_no_tools_empty_name_stays_content(self, mock_tokenizer, mock_request):
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        text = DSML_INVOKE_PREFIX + DSML_INVOKE_NAME_END + " more text."
 +        result = parser.extract_tool_calls(text, mock_request)
 +
@@ -3147,15 +3175,29 @@ index 000000000..d2dd86c6d
 +        cfg = deepseek_v4_config(thinking=False)
 +        assert cfg.initial_state.name == "CONTENT"
 +
-+    def test_enable_thinking_kwarg(self, mock_tokenizer):
-+        p = DeepSeekV4Parser(
-+            mock_tokenizer, chat_template_kwargs={"enable_thinking": True}
++    @pytest.mark.parametrize(
++        ("chat_template_kwargs", "expected_state"),
++        [
++            ({}, "REASONING"),
++            ({"thinking": True}, "REASONING"),
++            ({"enable_thinking": True}, "REASONING"),
++            ({"reasoning_effort": "high"}, "REASONING"),
++            ({"thinking": False}, "CONTENT"),
++            ({"enable_thinking": False}, "CONTENT"),
++            (
++                {"enable_thinking": True, "reasoning_effort": "none"},
++                "CONTENT",
++            ),
++        ],
++    )
++    def test_parser_thinking_mode_matches_tokenizer_default(
++        self, mock_tokenizer, chat_template_kwargs, expected_state
++    ):
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            chat_template_kwargs=chat_template_kwargs,
 +        )
-+        assert p.parser_engine_config.initial_state.name == "REASONING"
-+
-+    def test_no_thinking_kwarg_defaults_to_content(self, mock_tokenizer):
-+        p = DeepSeekV4Parser(mock_tokenizer)
-+        assert p.parser_engine_config.initial_state.name == "CONTENT"
++        assert parser.parser_engine_config.initial_state.name == expected_state
 +
 +    def test_thinking_mode_reasoning_without_tags(self, mock_tokenizer):
 +        parser = DeepSeekV4Parser(
@@ -3273,7 +3315,9 @@ index 000000000..d2dd86c6d
 +        assert args == {"location": "NYC"}
 +
 +    def test_thinking_false_explicit_think_then_tool_call(self, mock_tokenizer):
-+        parser = DeepSeekV4Parser(mock_tokenizer)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer, chat_template_kwargs={"thinking": False}
++        )
 +        chunks = [
 +            DSML_THINK_START,
 +            "Let me check the weather.",
@@ -3472,7 +3516,11 @@ index 000000000..d2dd86c6d
 +        )
 +
 +    def test_non_streaming(self, mock_tokenizer, mock_request, bridge_tool):
-+        parser = DeepSeekV4Parser(mock_tokenizer, tools=[bridge_tool])
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            tools=[bridge_tool],
++            chat_template_kwargs={"thinking": False},
++        )
 +        mock_request.tools = [bridge_tool]
 +
 +        result = parser.extract_tool_calls(self._output(), mock_request)
@@ -3498,7 +3546,11 @@ index 000000000..d2dd86c6d
 +        bridge_tool,
 +        chunk_size,
 +    ):
-+        parser = DeepSeekV4Parser(mock_tokenizer, tools=[bridge_tool])
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            tools=[bridge_tool],
++            chat_template_kwargs={"thinking": False},
++        )
 +        mock_request.tools = [bridge_tool]
 +        output = self._output()
 +        chunks = [output[i : i + chunk_size] for i in range(0, len(output), chunk_size)]
@@ -3574,7 +3626,11 @@ index 000000000..d2dd86c6d
 +        expected,
 +    ):
 +        tools = [weather_tool, time_tool]
-+        parser = DeepSeekV4Parser(mock_tokenizer, tools=tools)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            tools=tools,
++            chat_template_kwargs={"thinking": False},
++        )
 +        mock_request.tools = tools
 +
 +        text = _tool_calls(
@@ -3597,7 +3653,11 @@ index 000000000..d2dd86c6d
 +        self, mock_tokenizer, mock_request, weather_tool, time_tool
 +    ):
 +        tools = [weather_tool, time_tool]
-+        parser = DeepSeekV4Parser(mock_tokenizer, tools=tools)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            tools=tools,
++            chat_template_kwargs={"thinking": False},
++        )
 +        mock_request.tools = tools
 +
 +        chunks = [
@@ -3626,7 +3686,11 @@ index 000000000..d2dd86c6d
 +        self, mock_tokenizer, mock_request, weather_tool, time_tool
 +    ):
 +        tools = [weather_tool, time_tool]
-+        parser = DeepSeekV4Parser(mock_tokenizer, tools=tools)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            tools=tools,
++            chat_template_kwargs={"thinking": False},
++        )
 +        mock_request.tools = tools
 +
 +        text = _tool_calls(
@@ -3648,7 +3712,11 @@ index 000000000..d2dd86c6d
 +    def test_unwrap_single_tool_still_works(self, mock_tokenizer, mock_request):
 +        tool = _make_tool("get_weather", {"location": {"type": "string"}})
 +        tools = [tool]
-+        parser = DeepSeekV4Parser(mock_tokenizer, tools=tools)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            tools=tools,
++            chat_template_kwargs={"thinking": False},
++        )
 +        mock_request.tools = tools
 +
 +        text = _tool_calls(
@@ -3676,7 +3744,11 @@ index 000000000..d2dd86c6d
 +    def test_streaming_wrapper_unwrap_consistency(self, mock_tokenizer, mock_request):
 +        tool = _make_tool("get_weather", {"location": {"type": "string"}})
 +        tools = [tool]
-+        parser = DeepSeekV4Parser(mock_tokenizer, tools=tools)
++        parser = DeepSeekV4Parser(
++            mock_tokenizer,
++            tools=tools,
++            chat_template_kwargs={"thinking": False},
++        )
 +        mock_request.tools = tools
 +
 +        chunks = [
@@ -3833,6 +3905,35 @@ index 000000000..d2dd86c6d
 +        args = json.loads(output.tool_calls[0]["arguments"])
 +        assert args == {"location": "Berlin", "units": "celsius"}
 +
++    def test_default_thinking_extracts_tool_call_without_think_end(self, dsv4_tokens):
++        tokens = [
++            token
++            for token in dsv4_tokens
++            if token[0] != _DSV4_FULL_VOCAB[DSML_THINK_END]
++        ]
++        tokenizer = MockTokenizer(
++            vocab=dict(_DSV4_FULL_VOCAB),
++            tokens=tokens,
++        )
++        parser = _DeepSeekV4Delegating(tokenizer)
++
++        deltas = replay_streaming(
++            parser,
++            tokens,
++            chunk_size=1,
++            finished_on_last=True,
++            tools=DUMMY_TOOLS,
++            prompt_token_ids=[_DSV4_FULL_VOCAB[DSML_THINK_START]],
++        )
++        output = collect_output(deltas)
++
++        assert "The user wants" in output.reasoning
++        assert output.content == ""
++        assert len(output.tool_calls) == 1
++        assert output.tool_calls[0]["name"] == "get_weather"
++        args = json.loads(output.tool_calls[0]["arguments"])
++        assert args == {"location": "Berlin", "units": "celsius"}
++
 +    def test_eos_drop_token_does_not_swallow_tool_calls(self):
 +        """Tool calls must survive when an EOS DROP token's ID is in
 +        delta_token_ids but its text is absent from delta_text.
@@ -3958,7 +4059,7 @@ index 000000000..d2dd86c6d
 +        assert output.content == ""
 +        assert output.tool_calls == []
 diff --git a/tests/parser/engine/test_engine.py b/tests/parser/engine/test_engine.py
-index 0ea8afd8b..1cd1d1f44 100644
+index 0ea8afd8b9..1cd1d1f440 100644
 --- a/tests/parser/engine/test_engine.py
 +++ b/tests/parser/engine/test_engine.py
 @@ -190,9 +190,11 @@ class TestStreaming:
@@ -3977,7 +4078,7 @@ index 0ea8afd8b..1cd1d1f44 100644
          ids=["flat_args", "nested_arrays"],
      )
 diff --git a/tests/parser/engine/test_parser_engine.py b/tests/parser/engine/test_parser_engine.py
-index 93d566ec1..fc07c0f0f 100644
+index 93d566ec1a..fc07c0f0fd 100644
 --- a/tests/parser/engine/test_parser_engine.py
 +++ b/tests/parser/engine/test_parser_engine.py
 @@ -119,8 +119,10 @@ def _hermes_config() -> ParserEngineConfig:
@@ -4197,7 +4298,7 @@ index 93d566ec1..fc07c0f0f 100644
 +        )
 +        assert "<bos>" not in reasoning_text
 diff --git a/tests/parser/engine/test_replay.py b/tests/parser/engine/test_replay.py
-index 5e7a0b00a..1626135f7 100644
+index 5e7a0b00a2..1626135f78 100644
 --- a/tests/parser/engine/test_replay.py
 +++ b/tests/parser/engine/test_replay.py
 @@ -18,18 +18,22 @@ from typing import NamedTuple
@@ -4572,7 +4673,7 @@ index 5e7a0b00a..1626135f7 100644
      """Verify make_adapters sets reasoning/tool parser class refs on parser engine
      parser classes so the serving layer finds them and calls adjust_request."""
 diff --git a/tests/parser/engine/test_token_id_scanner.py b/tests/parser/engine/test_token_id_scanner.py
-index 3d0412d16..215377843 100644
+index 3d0412d168..2153778430 100644
 --- a/tests/parser/engine/test_token_id_scanner.py
 +++ b/tests/parser/engine/test_token_id_scanner.py
 @@ -57,7 +57,7 @@ class TestJoinDecodedTextReturnsStr:
@@ -4629,7 +4730,7 @@ index 3d0412d16..215377843 100644
      """End-to-end engine tests with detokenizer hold-back."""
  
 diff --git a/tests/parser/engine/trace_builder.py b/tests/parser/engine/trace_builder.py
-index bee3d5d8b..36410b4a1 100644
+index bee3d5d8b2..1b278d5bd5 100644
 --- a/tests/parser/engine/trace_builder.py
 +++ b/tests/parser/engine/trace_builder.py
 @@ -29,6 +29,8 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
@@ -4735,7 +4836,7 @@ index bee3d5d8b..36410b4a1 100644
 +
 +def _build_deepseek_v4(scenario: Scenario, validate: bool = True) -> Sample:
 +    thinking = scenario.reasoning is not None
-+    chat_kwargs = {"thinking": True} if thinking else None
++    chat_kwargs = {"thinking": thinking}
 +
 +    if thinking:
 +        expected_reasoning: str | None = scenario.reasoning or ""
@@ -4830,7 +4931,7 @@ index bee3d5d8b..36410b4a1 100644
      return _BUILDERS[model](scenario)
  
 diff --git a/tests/reasoning/test_deepseekv3_reasoning_parser.py b/tests/reasoning/test_deepseekv3_reasoning_parser.py
-index f5b37194f..81af6c2db 100644
+index f5b37194f9..81af6c2db4 100644
 --- a/tests/reasoning/test_deepseekv3_reasoning_parser.py
 +++ b/tests/reasoning/test_deepseekv3_reasoning_parser.py
 @@ -11,6 +11,8 @@ from vllm.reasoning.deepseek_r1_reasoning_parser import DeepSeekR1ReasoningParse
@@ -4857,8 +4958,55 @@ index f5b37194f..81af6c2db 100644
  
  
  def test_identity_reasoning_parser_basic(tokenizer):
+diff --git a/tests/tokenizers_/test_deepseek_v4.py b/tests/tokenizers_/test_deepseek_v4.py
+index 358732eabf..3d533c1053 100644
+--- a/tests/tokenizers_/test_deepseek_v4.py
++++ b/tests/tokenizers_/test_deepseek_v4.py
+@@ -76,12 +76,23 @@ def test_deepseek_v4_tokenizer_registered():
+     )
+ 
+ 
+-def test_deepseek_v4_defaults_to_chat_mode():
++def test_deepseek_v4_defaults_to_thinking_mode():
+     prompt = _tokenizer().apply_chat_template(
+         [{"role": "user", "content": "Hello"}],
+         tokenize=False,
+     )
+ 
++    assert prompt == ("<｜begin▁of▁sentence｜><｜User｜>Hello<｜Assistant｜><think>")
++
++
++@pytest.mark.parametrize("kwargs", [{"thinking": False}, {"enable_thinking": False}])
++def test_deepseek_v4_explicitly_disables_thinking(kwargs):
++    prompt = _tokenizer().apply_chat_template(
++        [{"role": "user", "content": "Hello"}],
++        tokenize=False,
++        **kwargs,
++    )
++
+     assert prompt == ("<｜begin▁of▁sentence｜><｜User｜>Hello<｜Assistant｜></think>")
+ 
+ 
+@@ -123,7 +134,7 @@ def test_deepseek_v4_uses_v4_tool_prompt_from_request_tools():
+     assert "</｜DSML｜tool_calls>" in prompt
+     assert "function_calls" not in prompt
+     assert '"name": "get_weather"' in prompt
+-    assert prompt.endswith("<｜User｜>Weather?<｜Assistant｜></think>")
++    assert prompt.endswith("<｜User｜>Weather?<｜Assistant｜><think>")
+ 
+ 
+ def test_deepseek_v4_renders_parsed_history_tool_arguments():
+@@ -280,7 +291,7 @@ def test_deepseek_v4_maps_xhigh_to_reference_max_reasoning_effort():
+         (1, {"thinking": True}),
+         (2, {"thinking": True}),
+         (3, {"thinking": True}),
+-        (4, {}),
++        (4, {"thinking": False}),
+     ],
+ )
+ def test_deepseek_v4_matches_reference_golden_fixtures(case_id, kwargs):
 diff --git a/tests/tool_parsers/test_deepseekv32_tool_parser.py b/tests/tool_parsers/test_deepseekv32_tool_parser.py
-index a35976b8b..40ad6033d 100644
+index a35976b8bb..40ad6033d3 100644
 --- a/tests/tool_parsers/test_deepseekv32_tool_parser.py
 +++ b/tests/tool_parsers/test_deepseekv32_tool_parser.py
 @@ -1,7 +1,7 @@
@@ -5072,7 +5220,7 @@ index a35976b8b..40ad6033d 100644
      def test_no_marker_leak_chunked(self, parser):
          """Chunked streaming must NOT leak DSML start-marker fragments
 diff --git a/tests/tool_parsers/test_deepseekv4_tool_parser.py b/tests/tool_parsers/test_deepseekv4_tool_parser.py
-index 80e3357b6..e7109626c 100644
+index 80e3357b68..e7109626c0 100644
 --- a/tests/tool_parsers/test_deepseekv4_tool_parser.py
 +++ b/tests/tool_parsers/test_deepseekv4_tool_parser.py
 @@ -1,7 +1,7 @@
@@ -5204,7 +5352,7 @@ index 80e3357b6..e7109626c 100644
      tool = ChatCompletionToolsParam(
          type="function",
 diff --git a/tests/tool_parsers/test_structural_tag_registry.py b/tests/tool_parsers/test_structural_tag_registry.py
-index bd84b2cbb..791d775ce 100644
+index bd84b2cbbf..791d775ce7 100644
 --- a/tests/tool_parsers/test_structural_tag_registry.py
 +++ b/tests/tool_parsers/test_structural_tag_registry.py
 @@ -5,7 +5,7 @@ from types import SimpleNamespace
@@ -5293,7 +5441,7 @@ index bd84b2cbb..791d775ce 100644
 +    assert grammar is not None
 +    assert "xml_object" in str(grammar)
 diff --git a/tests/v1/core/test_async_scheduler.py b/tests/v1/core/test_async_scheduler.py
-index 5e9c9280d..8253a8422 100644
+index 5e9c9280db..8253a8422e 100644
 --- a/tests/v1/core/test_async_scheduler.py
 +++ b/tests/v1/core/test_async_scheduler.py
 @@ -272,6 +272,9 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
@@ -5307,10 +5455,18 @@ index 5e9c9280d..8253a8422 100644
      scheduler.running = [request]
      scheduler.waiting = Mock()
 diff --git a/tests/v1/core/test_scheduler.py b/tests/v1/core/test_scheduler.py
-index dcfbfd5b1..43141bada 100644
+index dcfbfd5b1b..c3a922b14e 100644
 --- a/tests/v1/core/test_scheduler.py
 +++ b/tests/v1/core/test_scheduler.py
-@@ -2777,6 +2777,9 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
+@@ -2769,6 +2769,7 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
+     )
+     request.structured_output_request = Mock()
+     request.structured_output_request.grammar = Mock()
++    request.structured_output_request.grammar.is_terminated.return_value = False
+     request.structured_output_request.grammar.accept_tokens.return_value = False
+     request.status = RequestStatus.RUNNING
+     request.num_computed_tokens = request.num_tokens
+@@ -2777,6 +2778,9 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
      scheduler.connector = None
      scheduler.structured_output_manager = Mock()
      scheduler.structured_output_manager.should_advance.return_value = True
@@ -5320,9 +5476,142 @@ index dcfbfd5b1..43141bada 100644
      scheduler.requests = {request.request_id: request}
      scheduler.running = [request]
      scheduler.waiting = Mock()
+diff --git a/tests/v1/core/test_structured_output_terminated_grammar.py b/tests/v1/core/test_structured_output_terminated_grammar.py
+new file mode 100644
+index 0000000000..5831c0d8a5
+--- /dev/null
++++ b/tests/v1/core/test_structured_output_terminated_grammar.py
+@@ -0,0 +1,127 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Regression tests for terminated structured-output grammars (#42853)."""
++
++from unittest.mock import Mock
++
++import pytest
++
++from vllm.sampling_params import SamplingParams
++from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
++from vllm.v1.core.sched.scheduler import Scheduler
++from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
++from vllm.v1.request import Request, RequestStatus
++
++pytestmark = pytest.mark.cpu_test
++EOS_TOKEN_ID = 50256
++
++
++def _make_running_request(request_id: str = "0") -> Request:
++    sampling_params = SamplingParams(ignore_eos=True, max_tokens=4)
++    sampling_params.update_from_generation_config({}, EOS_TOKEN_ID)
++    request = Request(
++        request_id=request_id,
++        prompt_token_ids=[0, 1],
++        mm_features=None,
++        sampling_params=sampling_params,
++        pooling_params=None,
++    )
++    request.status = RequestStatus.RUNNING
++    request.num_computed_tokens = request.num_tokens
++    return request
++
++
++def _make_scheduler(request: Request) -> Scheduler:
++    scheduler = object.__new__(Scheduler)
++    scheduler.perf_metrics = None
++    scheduler.connector = None
++    scheduler.structured_output_manager = Mock()
++    scheduler.structured_output_manager.should_advance.return_value = True
++    scheduler.structured_output_manager.trim_reasoning_for_advance.side_effect = (
++        lambda request, new_token_ids: new_token_ids
++    )
++    scheduler.requests = {request.request_id: request}
++    scheduler.running = [request]
++    scheduler.waiting = Mock()
++    scheduler.kv_cache_manager = Mock()
++    scheduler.kv_cache_manager.take_events.return_value = None
++    scheduler.kv_event_publisher = Mock()
++    scheduler.finished_req_ids = set()
++    scheduler.finished_req_ids_dict = None
++    scheduler.vllm_config = Mock()
++    scheduler.vllm_config.model_config.enable_return_routed_experts = False
++    scheduler.enable_return_routed_experts = False
++    scheduler.recompute_kv_load_failures = False
++    scheduler.defer_block_free = False
++    scheduler.make_stats = Mock(return_value=None)
++    scheduler.max_model_len = 128
++
++    def free_request(req: Request, delay_free_blocks: bool = False):
++        scheduler.finished_req_ids.add(req.request_id)
++        scheduler.requests.pop(req.request_id, None)
++
++    scheduler._free_request = Mock(side_effect=free_request)
++    return scheduler
++
++
++def test_scheduler_does_not_advance_terminated_grammar():
++    request = _make_running_request()
++    grammar = Mock()
++    grammar.is_terminated.return_value = True
++    grammar.accept_tokens.return_value = False
++    request.structured_output_request = Mock(grammar=grammar)
++    scheduler = _make_scheduler(request)
++
++    scheduler_output = SchedulerOutput(
++        scheduled_new_reqs=[],
++        scheduled_cached_reqs=CachedRequestData.make_empty(),
++        num_scheduled_tokens={request.request_id: 1},
++        total_num_scheduled_tokens=1,
++        scheduled_encoder_inputs={},
++        scheduled_spec_decode_tokens={},
++        num_common_prefix_blocks=[],
++        finished_req_ids=set(),
++        free_encoder_mm_hashes=[],
++    )
++    model_output = ModelRunnerOutput(
++        req_ids=[request.request_id],
++        req_id_to_index={request.request_id: 0},
++        sampled_token_ids=[[123]],
++        logprobs=None,
++        prompt_logprobs_dict={},
++        pooler_output=[],
++    )
++
++    scheduler.update_from_output(scheduler_output, model_output)
++
++    grammar.accept_tokens.assert_not_called()
++    assert request.status != RequestStatus.FINISHED_ERROR
++
++
++@pytest.mark.parametrize("in_output", [False, True])
++def test_draft_validation_skips_terminated_grammar(in_output: bool):
++    request = _make_running_request()
++    request.is_prefill_chunk = False
++    grammar = Mock()
++    grammar.is_terminated.return_value = True
++    request.structured_output_request = Mock(grammar=grammar)
++    scheduler = _make_scheduler(request)
++    draft = DraftTokenIds(
++        req_ids=[request.request_id],
++        draft_token_ids=[[10, 20]],
++    )
++
++    if in_output:
++        scheduler_output = Mock(
++            scheduled_spec_decode_tokens={request.request_id: [-1, -1]}
++        )
++        scheduler.update_draft_token_ids_in_output(draft, scheduler_output)
++        assert scheduler_output.scheduled_spec_decode_tokens[request.request_id] == [
++            10,
++            20,
++        ]
++    else:
++        scheduler.update_draft_token_ids(draft)
++        assert request.spec_token_ids == [10, 20]
++
++    grammar.validate_tokens.assert_not_called()
 diff --git a/tests/v1/spec_decode/test_dspark_scheduler.py b/tests/v1/spec_decode/test_dspark_scheduler.py
 new file mode 100644
-index 000000000..34b0d7861
+index 0000000000..34b0d7861c
 --- /dev/null
 +++ b/tests/v1/spec_decode/test_dspark_scheduler.py
 @@ -0,0 +1,42 @@
@@ -5370,10 +5659,10 @@ index 000000000..34b0d7861
 +    assert torch.equal(widths, torch.tensor([1], dtype=torch.int32))
 diff --git a/tests/v1/spec_decode/test_mtp_structured_output.py b/tests/v1/spec_decode/test_mtp_structured_output.py
 new file mode 100644
-index 000000000..619f3ad6f
+index 0000000000..673836bcb5
 --- /dev/null
 +++ b/tests/v1/spec_decode/test_mtp_structured_output.py
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,466 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""grammar_bitmask under spec-decode draft padding (#44006)."""
@@ -5467,6 +5756,22 @@ index 000000000..619f3ad6f
 +    assert bitmask is not None
 +    assert bitmask.shape[0] == NUM_SPEC_TOKENS + 1
 +    assert not grammar.is_terminated()
++
++
++def test_xgrammar_accept_tokens_stops_after_speculative_eos():
++    """Trailing speculative tokens do not advance a terminated matcher."""
++    tokenizer, _, request, prompt = _make_manager_and_request("xgrammar")
++    grammar = request.structured_output_request.grammar
++
++    assert grammar.accept_tokens(request.request_id, prompt)
++    processed_before_eos = grammar.num_processed_tokens
++
++    eos = tokenizer.eos_token_id
++    trailing_draft = tokenizer.encode("\n")[0]
++    assert grammar.accept_tokens(request.request_id, [eos, trailing_draft])
++
++    assert grammar.is_terminated()
++    assert grammar.num_processed_tokens == processed_before_eos + 1
 +
 +
 +@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
@@ -5565,7 +5870,9 @@ index 000000000..619f3ad6f
 +
 +
 +@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
-+def test_bitmask_post_reasoning_end_drafts_skip_grammar_advance(backend):
++def test_bitmask_post_reasoning_end_drafts_skip_grammar_advance(
++    backend, caplog, monkeypatch
++):
 +    """Post-marker drafts predate the bitmask and may be grammar-invalid;
 +    grammar_bitmask must skip the grammar advance instead of asserting.
 +    """
@@ -5597,7 +5904,24 @@ index 000000000..619f3ad6f
 +    # A token that the JSON grammar would reject as the first post-marker
 +    # token; without the fix grammar.accept_tokens fires the assertion.
 +    invalid_post = tokenizer.encode("z")[0]
-+    drafts = [pre, marker, invalid_post]
++    unreachable_post = tokenizer.encode('"')[0]
++    drafts = [pre, marker, invalid_post, unreachable_post]
++
++    validate_calls = []
++    accept_calls = []
++    original_validate = grammar.validate_tokens
++    original_accept = grammar.accept_tokens
++
++    def validate_spy(tokens):
++        validate_calls.append(list(tokens))
++        return original_validate(tokens)
++
++    def accept_spy(req_id, tokens):
++        accept_calls.append((req_id, list(tokens)))
++        return original_accept(req_id, tokens)
++
++    monkeypatch.setattr(grammar, "validate_tokens", validate_spy)
++    monkeypatch.setattr(grammar, "accept_tokens", accept_spy)
 +
 +    bitmask = manager.grammar_bitmask(
 +        requests={request.request_id: request},
@@ -5611,6 +5935,94 @@ index 000000000..619f3ad6f
 +    assert not (bitmask[2] == -1).all()
 +    # Grammar must not have advanced through the unvalidated draft.
 +    assert not grammar.is_terminated()
++    assert validate_calls == [[invalid_post]]
++    assert accept_calls == []
++    assert "Failed to advance FSM" not in caplog.text
++
++
++@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
++def test_bitmask_valid_post_reasoning_draft_advances_then_rolls_back(
++    backend, caplog, monkeypatch
++):
++    """A valid post-marker draft is persisted for the next bitmask row, then
++    rolled back so repeated scheduler probes remain idempotent.
++    """
++    tokenizer, manager, request, _ = _make_manager_and_request(backend, prompt_str="{")
++    grammar = request.structured_output_request.grammar
++    assert grammar.accept_tokens(request.request_id, tokenizer.encode("{"))
++    processed_before = getattr(grammar, "num_processed_tokens", None)
++
++    marker = tokenizer.encode("\n")[0]
++    manager.reasoner_cls = _MarkerReasoner
++    request.structured_output_request.reasoner = _MarkerReasoner(marker)
++    request.structured_output_request.reasoning_ended = False
++
++    valid_post = tokenizer.encode('"')[0]
++    drafts = [tokenizer.encode(" ")[0], marker, valid_post]
++    validate_calls = []
++    accept_calls = []
++    original_validate = grammar.validate_tokens
++    original_accept = grammar.accept_tokens
++
++    def validate_spy(tokens):
++        validate_calls.append(list(tokens))
++        return original_validate(tokens)
++
++    def accept_spy(req_id, tokens):
++        accept_calls.append((req_id, list(tokens)))
++        return original_accept(req_id, tokens)
++
++    monkeypatch.setattr(grammar, "validate_tokens", validate_spy)
++    monkeypatch.setattr(grammar, "accept_tokens", accept_spy)
++
++    first = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++    second = manager.grammar_bitmask(
++        requests={request.request_id: request},
++        structured_output_request_ids=[request.request_id],
++        scheduled_spec_decode_tokens={request.request_id: drafts},
++    )
++
++    assert first is not None and second is not None
++    assert (first == second).all()
++    assert validate_calls == [[valid_post], [valid_post]]
++    assert accept_calls == [
++        (request.request_id, [valid_post]),
++        (request.request_id, [valid_post]),
++    ]
++    if processed_before is not None:
++        assert grammar.num_processed_tokens == processed_before
++    assert not grammar.is_terminated()
++    assert "Failed to advance FSM" not in caplog.text
++
++
++def test_bitmask_post_reasoning_validation_accept_mismatch_fails_closed(monkeypatch):
++    """A backend state mismatch is not an expected speculative rejection."""
++    tokenizer, manager, request, _ = _make_manager_and_request(
++        "xgrammar", prompt_str="{"
++    )
++    grammar = request.structured_output_request.grammar
++    assert grammar.accept_tokens(request.request_id, tokenizer.encode("{"))
++
++    marker = tokenizer.encode("\n")[0]
++    manager.reasoner_cls = _MarkerReasoner
++    request.structured_output_request.reasoner = _MarkerReasoner(marker)
++    request.structured_output_request.reasoning_ended = False
++    post = tokenizer.encode('"')[0]
++    drafts = [tokenizer.encode(" ")[0], marker, post]
++
++    monkeypatch.setattr(grammar, "validate_tokens", lambda tokens: list(tokens))
++    monkeypatch.setattr(grammar, "accept_tokens", lambda req_id, tokens: False)
++
++    with pytest.raises(AssertionError):
++        manager.grammar_bitmask(
++            requests={request.request_id: request},
++            structured_output_request_ids=[request.request_id],
++            scheduled_spec_decode_tokens={request.request_id: drafts},
++        )
 +
 +
 +@pytest.mark.parametrize("backend", ["xgrammar", "guidance"])
@@ -5717,8 +6129,139 @@ index 000000000..619f3ad6f
 +    next_step = [post, post]
 +    request.append_output_token_ids(next_step)
 +    assert manager.trim_reasoning_for_advance(request, next_step) == next_step
+diff --git a/tests/v1/spec_decode/test_parallel_drafting_token_id.py b/tests/v1/spec_decode/test_parallel_drafting_token_id.py
+new file mode 100644
+index 0000000000..4073be01e2
+--- /dev/null
++++ b/tests/v1/spec_decode/test_parallel_drafting_token_id.py
+@@ -0,0 +1,37 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from types import SimpleNamespace
++
++import pytest
++
++from vllm.v1.spec_decode.llm_base_proposer import SpecDecodeBaseProposer
++
++
++@pytest.mark.parametrize(
++    ("hf_config", "expected"),
++    [
++        (SimpleNamespace(mask_token_id=11), 11),
++        (SimpleNamespace(dspark_noise_token_id=22), 22),
++        (SimpleNamespace(pard_token=33), 33),
++        (SimpleNamespace(ptd_token_id=44), 44),
++        (SimpleNamespace(dflash_config={"mask_token_id": 55}), 55),
++    ],
++)
++def test_v1_parallel_drafting_token_id_resolution(hf_config, expected):
++    proposer = object.__new__(SpecDecodeBaseProposer)
++    proposer.draft_model_config = SimpleNamespace(hf_config=hf_config)
++    proposer.pass_hidden_states_to_model = False
++
++    proposer._init_parallel_drafting_params()
++
++    assert proposer.parallel_drafting_token_id == expected
++
++
++def test_v1_parallel_drafting_token_id_missing_fails_closed():
++    proposer = object.__new__(SpecDecodeBaseProposer)
++    proposer.draft_model_config = SimpleNamespace(hf_config=SimpleNamespace())
++    proposer.pass_hidden_states_to_model = False
++
++    with pytest.raises(ValueError, match="dspark_noise_token_id"):
++        proposer._init_parallel_drafting_params()
+diff --git a/tests/v1/structured_output/test_backend_xgrammar_stop_tokens.py b/tests/v1/structured_output/test_backend_xgrammar_stop_tokens.py
+new file mode 100644
+index 0000000000..56d3519021
+--- /dev/null
++++ b/tests/v1/structured_output/test_backend_xgrammar_stop_tokens.py
+@@ -0,0 +1,82 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from unittest.mock import Mock
++
++import pytest
++from transformers import AutoTokenizer
++
++from vllm.config import DeviceConfig, StructuredOutputsConfig, VllmConfig
++from vllm.v1.structured_output.backend_types import StructuredOutputOptions
++from vllm.v1.structured_output.backend_xgrammar import (
++    XgrammarBackend,
++    XgrammarGrammar,
++)
++
++TOKENIZER = "openai-community/gpt2"
++VOCAB_SIZE = 50257
++EOS = 50256
++QUOTE = 1
++LETTER = 55
++
++
++def _token_allowed(row, token_id: int) -> bool:
++    word = int(row[token_id // 32].item()) & 0xFFFFFFFF
++    return bool(word & (1 << (token_id % 32)))
++
++
++@pytest.fixture(scope="module")
++def backend() -> XgrammarBackend:
++    vllm_config = VllmConfig(
++        device_config=DeviceConfig(device="cpu"),
++        structured_outputs_config=StructuredOutputsConfig(backend="xgrammar"),
++    )
++    return XgrammarBackend(
++        vllm_config,
++        tokenizer=AutoTokenizer.from_pretrained(TOKENIZER),
++        vocab_size=VOCAB_SIZE,
++    )
++
++
++def test_request_stop_tokens_gated_to_grammar_terminal(backend: XgrammarBackend):
++    schema = '{"type": "string"}'
++    default = backend.compile_grammar(StructuredOutputOptions.JSON, schema)
++    override = backend.compile_grammar(
++        StructuredOutputOptions.JSON,
++        schema,
++        stop_token_ids={EOS, LETTER},
++    )
++
++    for grammar in (default, override):
++        assert grammar.accept_tokens("req", [QUOTE])
++
++    bm_default = backend.allocate_token_bitmask(1)
++    bm_override = backend.allocate_token_bitmask(1)
++    default.fill_bitmask(bm_default, 0)
++    override.fill_bitmask(bm_override, 0)
++
++    assert _token_allowed(bm_default[0], LETTER)
++    assert not _token_allowed(bm_override[0], LETTER)
++
++    for grammar in (default, override):
++        assert grammar.accept_tokens("req", [QUOTE])
++        assert not grammar.is_terminated()
++
++    default.fill_bitmask(bm_default, 0)
++    override.fill_bitmask(bm_override, 0)
++
++    assert not _token_allowed(bm_default[0], LETTER)
++    assert _token_allowed(bm_override[0], LETTER)
++    assert _token_allowed(bm_default[0], EOS)
++    assert _token_allowed(bm_override[0], EOS)
++
++
++def test_rejected_token_synchronizes_terminated_state():
++    """A rejected token cannot leave the cached matcher state stale."""
++    matcher = Mock()
++    matcher.is_terminated.side_effect = [False, True]
++    matcher.accept_token.return_value = False
++    grammar = XgrammarGrammar(vocab_size=1, matcher=matcher, ctx=Mock())
++
++    assert not grammar.accept_tokens("req", [7])
++    assert grammar.is_terminated()
 diff --git a/tests/v1/structured_output/test_reasoning_structured_output.py b/tests/v1/structured_output/test_reasoning_structured_output.py
-index 861e919c1..ad5f1d5d7 100644
+index 861e919c10..ad5f1d5d79 100644
 --- a/tests/v1/structured_output/test_reasoning_structured_output.py
 +++ b/tests/v1/structured_output/test_reasoning_structured_output.py
 @@ -73,6 +73,7 @@ class TestReasoningStructuredOutput:
@@ -5895,7 +6438,7 @@ index 861e919c1..ad5f1d5d7 100644
 +        ) == [271, 5005]
 diff --git a/tests/v1/worker/test_kv_block_zeroer.py b/tests/v1/worker/test_kv_block_zeroer.py
 new file mode 100644
-index 000000000..fbb52540b
+index 0000000000..fbb52540b2
 --- /dev/null
 +++ b/tests/v1/worker/test_kv_block_zeroer.py
 @@ -0,0 +1,46 @@
@@ -5947,7 +6490,7 @@ index 000000000..fbb52540b
 +    assert torch.equal(backing, expected)
 diff --git a/tools/nvfp4_flashinfer_sm120/README.md b/tools/nvfp4_flashinfer_sm120/README.md
 new file mode 100644
-index 000000000..a147137db
+index 0000000000..a147137db7
 --- /dev/null
 +++ b/tools/nvfp4_flashinfer_sm120/README.md
 @@ -0,0 +1,49 @@
@@ -6002,7 +6545,7 @@ index 000000000..a147137db
 +- Microbench (isolated KV gather, RTX 5090): 1.86× tokens/s vs 656 B.
 diff --git a/tools/nvfp4_flashinfer_sm120/nvfp4_expand.cuh b/tools/nvfp4_flashinfer_sm120/nvfp4_expand.cuh
 new file mode 100644
-index 000000000..e27203c56
+index 0000000000..e27203c56c
 --- /dev/null
 +++ b/tools/nvfp4_flashinfer_sm120/nvfp4_expand.cuh
 @@ -0,0 +1,211 @@
@@ -6219,7 +6762,7 @@ index 000000000..e27203c56
 +}
 diff --git a/tools/nvfp4_flashinfer_sm120/patch_flashinfer.py b/tools/nvfp4_flashinfer_sm120/patch_flashinfer.py
 new file mode 100644
-index 000000000..cfa92d323
+index 0000000000..cfa92d3232
 --- /dev/null
 +++ b/tools/nvfp4_flashinfer_sm120/patch_flashinfer.py
 @@ -0,0 +1,412 @@
@@ -6636,7 +7179,7 @@ index 000000000..cfa92d323
 +print("SYNTAX-OK python")
 +print("PATCH-FLASHINFER-DONE")
 diff --git a/vllm/compilation/breakable_cudagraph.py b/vllm/compilation/breakable_cudagraph.py
-index 6da3ec717..c84958ac0 100644
+index 6da3ec7178..c84958ac0b 100644
 --- a/vllm/compilation/breakable_cudagraph.py
 +++ b/vllm/compilation/breakable_cudagraph.py
 @@ -175,10 +175,13 @@ class BreakableCUDAGraphCapture:
@@ -6656,7 +7199,7 @@ index 6da3ec717..c84958ac0 100644
          self._capturing = True
  
 diff --git a/vllm/compilation/cuda_graph.py b/vllm/compilation/cuda_graph.py
-index b63d86199..3cad1f058 100644
+index b63d861997..3cad1f058d 100644
 --- a/vllm/compilation/cuda_graph.py
 +++ b/vllm/compilation/cuda_graph.py
 @@ -314,6 +314,10 @@ class CUDAGraphWrapper:
@@ -6671,7 +7214,7 @@ index b63d86199..3cad1f058 100644
                      # `output` is managed by pytorch's cudagraph pool
                      output = self.runnable(*args, **kwargs)
 diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
-index de505e122..f0b49e294 100644
+index de505e122c..f0b49e2940 100644
 --- a/vllm/config/speculative.py
 +++ b/vllm/config/speculative.py
 @@ -54,6 +54,7 @@ MTPModelTypes = Literal[
@@ -6873,7 +7416,7 @@ index de505e122..f0b49e294 100644
          return self.num_speculative_tokens_per_batch_size is not None
  
 diff --git a/vllm/config/vllm.py b/vllm/config/vllm.py
-index ba7d26c93..55e8ddaf9 100644
+index ba7d26c93b..55e8ddaf9c 100644
 --- a/vllm/config/vllm.py
 +++ b/vllm/config/vllm.py
 @@ -524,6 +524,16 @@ class VllmConfig:
@@ -7000,7 +7543,7 @@ index ba7d26c93..55e8ddaf9 100644
  
      @model_validator(mode="after")
 diff --git a/vllm/envs.py b/vllm/envs.py
-index 27a85bb3d..24b625961 100755
+index 27a85bb3d0..24b6259618 100755
 --- a/vllm/envs.py
 +++ b/vllm/envs.py
 @@ -179,6 +179,9 @@ if TYPE_CHECKING:
@@ -7073,7 +7616,7 @@ index 27a85bb3d..24b625961 100755
          # Refer to
          # https://github.com/ray-project/ray/blob/c584b1ea97b00793d1def71eaf81537d70efba42/python/ray/_private/accelerators/nvidia_gpu.py#L11
 diff --git a/vllm/model_executor/layers/attention/mla_attention.py b/vllm/model_executor/layers/attention/mla_attention.py
-index 051468ed1..9e5cc3dad 100644
+index 051468ed14..9e5cc3dadb 100644
 --- a/vllm/model_executor/layers/attention/mla_attention.py
 +++ b/vllm/model_executor/layers/attention/mla_attention.py
 @@ -188,6 +188,7 @@ return curr_o @ W_O
@@ -7169,7 +7712,7 @@ index 051468ed1..9e5cc3dad 100644
  
          # Enforce that we enough for at least 1 page per request
 diff --git a/vllm/model_executor/layers/quantization/fp8.py b/vllm/model_executor/layers/quantization/fp8.py
-index 7cdb04cfb..d8916b966 100644
+index 7cdb04cfbe..d8916b966d 100644
 --- a/vllm/model_executor/layers/quantization/fp8.py
 +++ b/vllm/model_executor/layers/quantization/fp8.py
 @@ -671,6 +671,21 @@ class Fp8MoEMethod(FusedMoEMethodBase):
@@ -7246,7 +7789,7 @@ index 7cdb04cfb..d8916b966 100644
          assert self.moe_kernel is not None
          return self.moe_kernel.apply(
 diff --git a/vllm/model_executor/layers/quantization/modelopt.py b/vllm/model_executor/layers/quantization/modelopt.py
-index d51a2dd31..92f7c18fa 100644
+index d51a2dd312..92f7c18fa5 100644
 --- a/vllm/model_executor/layers/quantization/modelopt.py
 +++ b/vllm/model_executor/layers/quantization/modelopt.py
 @@ -1,6 +1,7 @@
@@ -7459,7 +8002,7 @@ index d51a2dd31..92f7c18fa 100644
                  return UnquantizedLinearMethod()
              return None
 diff --git a/vllm/model_executor/layers/quantization/mxfp4.py b/vllm/model_executor/layers/quantization/mxfp4.py
-index 1b2a8a74b..a754087dd 100644
+index 1b2a8a74bd..a754087ddc 100644
 --- a/vllm/model_executor/layers/quantization/mxfp4.py
 +++ b/vllm/model_executor/layers/quantization/mxfp4.py
 @@ -491,7 +491,8 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
@@ -7537,7 +8080,7 @@ index 1b2a8a74b..a754087dd 100644
          assert self.moe_kernel is not None
          return self.moe_kernel.apply(
 diff --git a/vllm/model_executor/layers/quantization/utils/fp8_utils.py b/vllm/model_executor/layers/quantization/utils/fp8_utils.py
-index 32a2d8689..3e83d5a87 100644
+index 32a2d86899..3e83d5a870 100644
 --- a/vllm/model_executor/layers/quantization/utils/fp8_utils.py
 +++ b/vllm/model_executor/layers/quantization/utils/fp8_utils.py
 @@ -1122,6 +1122,11 @@ def deepgemm_post_process_fp8_weight_block(
@@ -7554,7 +8097,7 @@ index 32a2d8689..3e83d5a87 100644
              mn=r,
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_bf12.py b/vllm/model_executor/layers/quantization/utils/moe_w2_bf12.py
 new file mode 100644
-index 000000000..d26ce2cf4
+index 0000000000..d26ce2cf4d
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_bf12.py
 @@ -0,0 +1,397 @@
@@ -7957,7 +8500,7 @@ index 000000000..d26ce2cf4
 +        "on" if _verify() else "off")
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
 new file mode 100644
-index 000000000..73d022986
+index 0000000000..73d022986f
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
 @@ -0,0 +1,2943 @@
@@ -10906,7 +11449,7 @@ index 000000000..73d022986
 +    ready.cache_clear()
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py b/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py
 new file mode 100644
-index 000000000..68451bfb5
+index 0000000000..68451bfb55
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py
 @@ -0,0 +1,2393 @@
@@ -13305,7 +13848,7 @@ index 000000000..68451bfb5
 +            + "; ".join(str(e) for e in errors))
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_fast_loader.py b/vllm/model_executor/layers/quantization/utils/moe_w2_fast_loader.py
 new file mode 100644
-index 000000000..5a36f13f9
+index 0000000000..5a36f13f93
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_fast_loader.py
 @@ -0,0 +1,134 @@
@@ -13445,7 +13988,7 @@ index 000000000..5a36f13f9
 +            gc.collect()
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_gate.py b/vllm/model_executor/layers/quantization/utils/moe_w2_gate.py
 new file mode 100644
-index 000000000..f01adef0d
+index 0000000000..f01adef0d6
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_gate.py
 @@ -0,0 +1,342 @@
@@ -13793,7 +14336,7 @@ index 000000000..f01adef0d
 +                fire_rate=(_n_fired / _n_steps if _n_steps else 0.0))
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_looka.py b/vllm/model_executor/layers/quantization/utils/moe_w2_looka.py
 new file mode 100644
-index 000000000..f9db2751c
+index 0000000000..f9db2751cb
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_looka.py
 @@ -0,0 +1,269 @@
@@ -14068,7 +14611,7 @@ index 000000000..f9db2751c
 +            f"(top-{_PILOT_K}, n={tot[1]})")
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_mapped_host.py b/vllm/model_executor/layers/quantization/utils/moe_w2_mapped_host.py
 new file mode 100644
-index 000000000..bf69ddb75
+index 0000000000..bf69ddb75d
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_mapped_host.py
 @@ -0,0 +1,757 @@
@@ -14831,7 +15374,7 @@ index 000000000..bf69ddb75
 +    _cudart.cache_clear()
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_planes.py b/vllm/model_executor/layers/quantization/utils/moe_w2_planes.py
 new file mode 100644
-index 000000000..d644b6041
+index 0000000000..d644b60411
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_planes.py
 @@ -0,0 +1,404 @@
@@ -15241,7 +15784,7 @@ index 000000000..d644b6041
 +    return vals * s
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_planes_cache.py b/vllm/model_executor/layers/quantization/utils/moe_w2_planes_cache.py
 new file mode 100644
-index 000000000..d61b22c7d
+index 0000000000..d61b22c7d7
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_planes_cache.py
 @@ -0,0 +1,354 @@
@@ -15601,7 +16144,7 @@ index 000000000..d61b22c7d
 +    _ckpt_id.cache_clear()
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_store.py b/vllm/model_executor/layers/quantization/utils/moe_w2_store.py
 new file mode 100644
-index 000000000..30081e6b9
+index 0000000000..30081e6b93
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_store.py
 @@ -0,0 +1,944 @@
@@ -16551,7 +17094,7 @@ index 000000000..30081e6b9
 +    return store
 diff --git a/vllm/model_executor/layers/quantization/utils/prefill_timers.py b/vllm/model_executor/layers/quantization/utils/prefill_timers.py
 new file mode 100644
-index 000000000..fd83f500b
+index 0000000000..fd83f500b3
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/prefill_timers.py
 @@ -0,0 +1,53 @@
@@ -16609,7 +17152,7 @@ index 000000000..fd83f500b
 +    logger.info("[prefill-timer] %-14s total %8.1f ms over %5d spans",
 +                name, _total_ms[name], _count[name])
 diff --git a/vllm/model_executor/layers/sparse_attn_indexer.py b/vllm/model_executor/layers/sparse_attn_indexer.py
-index fe2b268cd..faa33866f 100644
+index fe2b268cde..faa33866f2 100644
 --- a/vllm/model_executor/layers/sparse_attn_indexer.py
 +++ b/vllm/model_executor/layers/sparse_attn_indexer.py
 @@ -2,6 +2,8 @@
@@ -16916,7 +17459,7 @@ index fe2b268cd..faa33866f 100644
              "AMD sparse_attn_indexer expects a single FP8 q_quant tensor"
          )
 diff --git a/vllm/model_executor/models/deepseek_mtp.py b/vllm/model_executor/models/deepseek_mtp.py
-index 88f33ac02..546f92265 100644
+index 88f33ac021..546f92265c 100644
 --- a/vllm/model_executor/models/deepseek_mtp.py
 +++ b/vllm/model_executor/models/deepseek_mtp.py
 @@ -35,6 +35,7 @@ from .deepseek_v2 import (
@@ -16944,7 +17487,7 @@ index 88f33ac02..546f92265 100644
          super().__init__()
          self.config = vllm_config.model_config.hf_config
 diff --git a/vllm/model_executor/models/qwen3_dflash.py b/vllm/model_executor/models/qwen3_dflash.py
-index 820260f79..6340e22f3 100644
+index 820260f795..6340e22f33 100644
 --- a/vllm/model_executor/models/qwen3_dflash.py
 +++ b/vllm/model_executor/models/qwen3_dflash.py
 @@ -345,7 +345,7 @@ class DFlashQwen3Model(nn.Module):
@@ -16990,7 +17533,7 @@ index 820260f79..6340e22f3 100644
          self.model.precompute_and_store_context_kv(
 diff --git a/vllm/model_executor/models/qwen3_dspark.py b/vllm/model_executor/models/qwen3_dspark.py
 new file mode 100644
-index 000000000..b387bae3d
+index 0000000000..b387bae3d9
 --- /dev/null
 +++ b/vllm/model_executor/models/qwen3_dspark.py
 @@ -0,0 +1,220 @@
@@ -17215,7 +17758,7 @@ index 000000000..b387bae3d
 +        loader.load_weights(model_weights.items())
 +        self.model._build_fused_kv_buffers()
 diff --git a/vllm/model_executor/models/registry.py b/vllm/model_executor/models/registry.py
-index a18d54acd..92e3bede8 100644
+index a18d54acdc..92e3bede8b 100644
 --- a/vllm/model_executor/models/registry.py
 +++ b/vllm/model_executor/models/registry.py
 @@ -604,6 +604,8 @@ _SPECULATIVE_DECODING_MODELS = {
@@ -17228,7 +17771,7 @@ index a18d54acd..92e3bede8 100644
      "PeagleLlamaForCausalLM": ("llama_eagle3", "Eagle3LlamaForCausalLM"),
      "Eagle3LlamaForCausalLM": ("llama_eagle3", "Eagle3LlamaForCausalLM"),
 diff --git a/vllm/models/deepseek_v4/__init__.py b/vllm/models/deepseek_v4/__init__.py
-index 44e486db7..d03eba3d4 100644
+index 44e486db77..d03eba3d41 100644
 --- a/vllm/models/deepseek_v4/__init__.py
 +++ b/vllm/models/deepseek_v4/__init__.py
 @@ -17,14 +17,23 @@ from .quant_config import DeepseekV4FP8Config
@@ -17257,7 +17800,7 @@ index 44e486db7..d03eba3d4 100644
      "DeepseekV4ForCausalLM",
 diff --git a/vllm/models/deepseek_v4/nvidia/dspark.py b/vllm/models/deepseek_v4/nvidia/dspark.py
 new file mode 100644
-index 000000000..be4a87b32
+index 0000000000..be4a87b323
 --- /dev/null
 +++ b/vllm/models/deepseek_v4/nvidia/dspark.py
 @@ -0,0 +1,488 @@
@@ -17750,7 +18293,7 @@ index 000000000..be4a87b32
 +            return f"model.{rest}"
 +        return f"model.layers.{stage}.{rest}"
 diff --git a/vllm/models/deepseek_v4/nvidia/model.py b/vllm/models/deepseek_v4/nvidia/model.py
-index aa60ad34c..66fbd00d7 100644
+index aa60ad34ce..66fbd00d70 100644
 --- a/vllm/models/deepseek_v4/nvidia/model.py
 +++ b/vllm/models/deepseek_v4/nvidia/model.py
 @@ -46,7 +46,12 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -17859,7 +18402,7 @@ index aa60ad34c..66fbd00d7 100644
  
      # Default mapper assumes the original FP4-expert checkpoint layout.
 diff --git a/vllm/models/deepseek_v4/nvidia/mtp.py b/vllm/models/deepseek_v4/nvidia/mtp.py
-index 64715deae..8c456a69a 100644
+index 64715deae9..8c456a69a6 100644
 --- a/vllm/models/deepseek_v4/nvidia/mtp.py
 +++ b/vllm/models/deepseek_v4/nvidia/mtp.py
 @@ -40,6 +40,7 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -17885,7 +18428,7 @@ index 64715deae..8c456a69a 100644
          super().__init__()
          self.config = vllm_config.model_config.hf_config
 diff --git a/vllm/models/deepseek_v4/nvidia/ops/o_proj.py b/vllm/models/deepseek_v4/nvidia/ops/o_proj.py
-index 18e3b1056..d53669202 100644
+index 18e3b10562..d53669202a 100644
 --- a/vllm/models/deepseek_v4/nvidia/ops/o_proj.py
 +++ b/vllm/models/deepseek_v4/nvidia/ops/o_proj.py
 @@ -15,13 +15,16 @@ def compute_fp8_einsum_recipe() -> tuple[tuple[int, int, int], bool]:
@@ -17908,7 +18451,7 @@ index 18e3b1056..d53669202 100644
  
  
 diff --git a/vllm/parser/abstract_parser.py b/vllm/parser/abstract_parser.py
-index 11fca8e43..639aec0fa 100644
+index 11fca8e43a..639aec0fa9 100644
 --- a/vllm/parser/abstract_parser.py
 +++ b/vllm/parser/abstract_parser.py
 @@ -11,6 +11,10 @@ from functools import cached_property
@@ -18053,7 +18596,7 @@ index 11fca8e43..639aec0fa 100644
          if not state.prompt_reasoning_checked and prompt_token_ids is not None:
 diff --git a/vllm/parser/deepseek_v32.py b/vllm/parser/deepseek_v32.py
 new file mode 100644
-index 000000000..30768d660
+index 0000000000..30768d660f
 --- /dev/null
 +++ b/vllm/parser/deepseek_v32.py
 @@ -0,0 +1,164 @@
@@ -18223,10 +18766,10 @@ index 000000000..30768d660
 +        return _unwrap_wrapper_args(result, self._tools, func_name)
 diff --git a/vllm/parser/deepseek_v4.py b/vllm/parser/deepseek_v4.py
 new file mode 100644
-index 000000000..a9f443146
+index 0000000000..8824131642
 --- /dev/null
 +++ b/vllm/parser/deepseek_v4.py
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,356 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""DeepSeek V4 parser: ``<think>``/``</think>``
@@ -18563,10 +19106,12 @@ index 000000000..a9f443146
 +        **kwargs,
 +    ) -> None:
 +        chat_kwargs = kwargs.pop("chat_template_kwargs", None) or {}
-+        thinking = (
-+            bool(chat_kwargs.get("thinking") or chat_kwargs.get("enable_thinking"))
-+            and chat_kwargs.get("reasoning_effort") != "none"
++        thinking = bool(
++            chat_kwargs.get("thinking") or chat_kwargs.get("enable_thinking")
 +        )
++        if "thinking" not in chat_kwargs and "enable_thinking" not in chat_kwargs:
++            thinking = True
++        thinking = thinking and chat_kwargs.get("reasoning_effort") != "none"
 +        super().__init__(
 +            tokenizer,
 +            tools,
@@ -18582,7 +19127,7 @@ index 000000000..a9f443146
 +        func_name = next((s.name for s in self._tool_slots if s.args == raw_args), None)
 +        return _unwrap_wrapper_args(result, self._tools, func_name)
 diff --git a/vllm/parser/engine/adapters.py b/vllm/parser/engine/adapters.py
-index 2482dad43..b9c4e42b1 100644
+index 2482dad437..b9c4e42b17 100644
 --- a/vllm/parser/engine/adapters.py
 +++ b/vllm/parser/engine/adapters.py
 @@ -111,7 +111,8 @@ class ParserEngineReasoningAdapter(ReasoningParser):
@@ -18596,7 +19141,7 @@ index 2482dad43..b9c4e42b1 100644
      def get_streaming_fallback_content(
          self,
 diff --git a/vllm/parser/engine/parser_engine.py b/vllm/parser/engine/parser_engine.py
-index 6848a9051..8e75e6b38 100644
+index 6848a90514..8e75e6b38c 100644
 --- a/vllm/parser/engine/parser_engine.py
 +++ b/vllm/parser/engine/parser_engine.py
 @@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
@@ -18776,7 +19321,7 @@ index 6848a9051..8e75e6b38 100644
                      pass  # no delta-level effect
  
 diff --git a/vllm/parser/engine/parser_engine_config.py b/vllm/parser/engine/parser_engine_config.py
-index 6b279a83d..08227adda 100644
+index 6b279a83d8..08227adda0 100644
 --- a/vllm/parser/engine/parser_engine_config.py
 +++ b/vllm/parser/engine/parser_engine_config.py
 @@ -24,16 +24,6 @@ from functools import cached_property
@@ -18838,7 +19383,7 @@ index 6b279a83d..08227adda 100644
      def terminal_defs(self):
          from vllm.parser.engine.incremental_lexer import terminals_from_literals
 diff --git a/vllm/parser/engine/registered_adapters.py b/vllm/parser/engine/registered_adapters.py
-index 9d670f305..bb81cbf8f 100644
+index 9d670f3056..bb81cbf8fb 100644
 --- a/vllm/parser/engine/registered_adapters.py
 +++ b/vllm/parser/engine/registered_adapters.py
 @@ -7,6 +7,8 @@ names so that :class:`ReasoningParserManager` and
@@ -18868,7 +19413,7 @@ index 9d670f305..bb81cbf8f 100644
      MinimaxM2ParserReasoningAdapter,
      MinimaxM2ParserToolAdapter,
 diff --git a/vllm/parser/engine/streaming_parser_engine.py b/vllm/parser/engine/streaming_parser_engine.py
-index aced61680..dfb91a020 100644
+index aced616806..dfb91a0201 100644
 --- a/vllm/parser/engine/streaming_parser_engine.py
 +++ b/vllm/parser/engine/streaming_parser_engine.py
 @@ -6,20 +6,23 @@ incremental lexing, and state-machine-driven semantic event emission."""
@@ -19235,7 +19780,7 @@ index aced61680..dfb91a020 100644
  
          for event_type in transition.events:
 diff --git a/vllm/parser/engine/token_id_scanner.py b/vllm/parser/engine/token_id_scanner.py
-index d9569de89..abcc2e2ba 100644
+index d9569de89a..abcc2e2bae 100644
 --- a/vllm/parser/engine/token_id_scanner.py
 +++ b/vllm/parser/engine/token_id_scanner.py
 @@ -8,6 +8,8 @@ from __future__ import annotations
@@ -19338,7 +19883,7 @@ index d9569de89..abcc2e2ba 100644
                      consumed = len(delta_text)
                  self._deferred_terminals.append(anchor)
 diff --git a/vllm/parser/gemma4.py b/vllm/parser/gemma4.py
-index e9223ee72..ab2225fd0 100644
+index e9223ee72f..ab2225fd04 100644
 --- a/vllm/parser/gemma4.py
 +++ b/vllm/parser/gemma4.py
 @@ -35,34 +35,6 @@ if TYPE_CHECKING:
@@ -19430,7 +19975,7 @@ index e9223ee72..ab2225fd0 100644
          self._reasoning_text = ""
 diff --git a/vllm/parser/utils.py b/vllm/parser/utils.py
 new file mode 100644
-index 000000000..51382cd29
+index 0000000000..51382cd290
 --- /dev/null
 +++ b/vllm/parser/utils.py
 @@ -0,0 +1,65 @@
@@ -19500,7 +20045,7 @@ index 000000000..51382cd29
 +
 +    return count_response_history_tool_calls(request_input)
 diff --git a/vllm/reasoning/__init__.py b/vllm/reasoning/__init__.py
-index cbb1fa350..1e6f63f27 100644
+index cbb1fa350f..1e6f63f271 100644
 --- a/vllm/reasoning/__init__.py
 +++ b/vllm/reasoning/__init__.py
 @@ -29,8 +29,8 @@ _REASONING_PARSERS_TO_REGISTER = {
@@ -19516,7 +20061,7 @@ index cbb1fa350..1e6f63f27 100644
          "poolside_v1_reasoning_parser",
 diff --git a/vllm/reasoning/deepseek_v4_engine_reasoning_parser.py b/vllm/reasoning/deepseek_v4_engine_reasoning_parser.py
 new file mode 100644
-index 000000000..6fa6444b3
+index 0000000000..6fa6444b35
 --- /dev/null
 +++ b/vllm/reasoning/deepseek_v4_engine_reasoning_parser.py
 @@ -0,0 +1,6 @@
@@ -19527,9 +20072,22 @@ index 000000000..6fa6444b3
 +
 +__all__ = ["DeepSeekV4ParserReasoningAdapter"]
 diff --git a/vllm/tokenizers/deepseek_v4.py b/vllm/tokenizers/deepseek_v4.py
-index 2a6aaaf73..0fe004b44 100644
+index 2a6aaaf739..2abb3b86cc 100644
 --- a/vllm/tokenizers/deepseek_v4.py
 +++ b/vllm/tokenizers/deepseek_v4.py
+@@ -29,9 +29,9 @@ def get_deepseek_v4_tokenizer(tokenizer: HfTokenizer) -> HfTokenizer:
+             tools: list[dict[str, Any]] | None = None,
+             **kwargs,
+         ) -> str | list[int]:
+-            thinking = kwargs.get("thinking", False)
+-            enable_thinking = kwargs.get("enable_thinking", False)
+-            thinking = thinking or enable_thinking
++            thinking = bool(kwargs.get("thinking") or kwargs.get("enable_thinking"))
++            if "thinking" not in kwargs and "enable_thinking" not in kwargs:
++                thinking = True
+             thinking_mode = "thinking" if thinking else "chat"
+ 
+             conversation = kwargs.get("conversation", messages)
 @@ -40,6 +40,9 @@ def get_deepseek_v4_tokenizer(tokenizer: HfTokenizer) -> HfTokenizer:
                  messages.insert(0, {"role": "system"})
                  messages[0]["tools"] = tools  # type: ignore[typeddict-unknown-key]
@@ -19550,7 +20108,7 @@ index 2a6aaaf73..0fe004b44 100644
                  reasoning_effort = "high"
  
 diff --git a/vllm/tokenizers/deepseek_v4_encoding.py b/vllm/tokenizers/deepseek_v4_encoding.py
-index 6895771e2..efe18793a 100644
+index 6895771e2f..efe18793a3 100644
 --- a/vllm/tokenizers/deepseek_v4_encoding.py
 +++ b/vllm/tokenizers/deepseek_v4_encoding.py
 @@ -3,6 +3,13 @@
@@ -19827,7 +20385,7 @@ index 6895771e2..efe18793a 100644
 -
 -# fmt: on
 diff --git a/vllm/tool_parsers/__init__.py b/vllm/tool_parsers/__init__.py
-index 109189a03..7a376850d 100644
+index 109189a033..7a376850dd 100644
 --- a/vllm/tool_parsers/__init__.py
 +++ b/vllm/tool_parsers/__init__.py
 @@ -31,12 +31,12 @@ _TOOL_PARSERS_TO_REGISTER = {
@@ -19849,7 +20407,7 @@ index 109189a03..7a376850d 100644
          "cohere_command_tool_parser",
 diff --git a/vllm/tool_parsers/deepseekv32_engine_tool_parser.py b/vllm/tool_parsers/deepseekv32_engine_tool_parser.py
 new file mode 100644
-index 000000000..4747fd10f
+index 0000000000..4747fd10f3
 --- /dev/null
 +++ b/vllm/tool_parsers/deepseekv32_engine_tool_parser.py
 @@ -0,0 +1,8 @@
@@ -19863,7 +20421,7 @@ index 000000000..4747fd10f
 +    structural_tag_model = "deepseek_v3_2"
 diff --git a/vllm/tool_parsers/deepseekv32_tool_parser.py b/vllm/tool_parsers/deepseekv32_tool_parser.py
 deleted file mode 100644
-index c597ac619..000000000
+index c597ac6196..0000000000
 --- a/vllm/tool_parsers/deepseekv32_tool_parser.py
 +++ /dev/null
 @@ -1,562 +0,0 @@
@@ -20431,7 +20989,7 @@ index c597ac619..000000000
 -        return None
 diff --git a/vllm/tool_parsers/deepseekv4_engine_tool_parser.py b/vllm/tool_parsers/deepseekv4_engine_tool_parser.py
 new file mode 100644
-index 000000000..7e3ebf269
+index 0000000000..7e3ebf2691
 --- /dev/null
 +++ b/vllm/tool_parsers/deepseekv4_engine_tool_parser.py
 @@ -0,0 +1,8 @@
@@ -20445,7 +21003,7 @@ index 000000000..7e3ebf269
 +    structural_tag_model = "deepseek_v4"
 diff --git a/vllm/tool_parsers/deepseekv4_tool_parser.py b/vllm/tool_parsers/deepseekv4_tool_parser.py
 deleted file mode 100644
-index 2558f585f..000000000
+index 2558f585f8..0000000000
 --- a/vllm/tool_parsers/deepseekv4_tool_parser.py
 +++ /dev/null
 @@ -1,17 +0,0 @@
@@ -20467,7 +21025,7 @@ index 2558f585f..000000000
 -    tool_call_end_token: str = "</｜DSML｜tool_calls>"
 -    structural_tag_model = "deepseek_v4"
 diff --git a/vllm/tool_parsers/utils.py b/vllm/tool_parsers/utils.py
-index a31420cf1..700ff48e5 100644
+index a31420cf1c..700ff48e59 100644
 --- a/vllm/tool_parsers/utils.py
 +++ b/vllm/tool_parsers/utils.py
 @@ -213,6 +213,19 @@ def find_tool_name(
@@ -20491,7 +21049,7 @@ index a31420cf1..700ff48e5 100644
      name, params = _extract_tool_info(tool)
      params = params if params else {"type": "object", "properties": {}}
 diff --git a/vllm/transformers_utils/configs/speculators/algos.py b/vllm/transformers_utils/configs/speculators/algos.py
-index 0dc3ccce0..fb75a278c 100644
+index 0dc3ccce08..fb75a278c7 100644
 --- a/vllm/transformers_utils/configs/speculators/algos.py
 +++ b/vllm/transformers_utils/configs/speculators/algos.py
 @@ -118,3 +118,47 @@ def update_dflash(config_dict: dict, pre_trained_config: dict) -> None:
@@ -20543,7 +21101,7 @@ index 0dc3ccce0..fb75a278c 100644
 +        if config_dict.get(key) is not None:
 +            pre_trained_config[key] = config_dict[key]
 diff --git a/vllm/utils/flashinfer.py b/vllm/utils/flashinfer.py
-index c8e6a8419..da200be68 100644
+index c8e6a8419b..da200be680 100644
 --- a/vllm/utils/flashinfer.py
 +++ b/vllm/utils/flashinfer.py
 @@ -54,7 +54,19 @@ def has_flashinfer() -> bool:
@@ -20568,7 +21126,7 @@ index c8e6a8419..da200be68 100644
              "FlashInfer unavailable since nvcc was not found "
              "and not using pre-downloaded cubins"
 diff --git a/vllm/v1/attention/backends/flashinfer.py b/vllm/v1/attention/backends/flashinfer.py
-index 80319003d..40193a3a6 100755
+index 80319003da..40193a3a6b 100755
 --- a/vllm/v1/attention/backends/flashinfer.py
 +++ b/vllm/v1/attention/backends/flashinfer.py
 @@ -408,7 +408,9 @@ class FlashInferBackend(AttentionBackend):
@@ -20584,7 +21142,7 @@ index 80319003d..40193a3a6 100755
              return torch.float8_e5m2
 diff --git a/vllm/v1/attention/backends/mla/cubit_sparse_mla.py b/vllm/v1/attention/backends/mla/cubit_sparse_mla.py
 new file mode 100644
-index 000000000..16d22c7cd
+index 0000000000..16d22c7cde
 --- /dev/null
 +++ b/vllm/v1/attention/backends/mla/cubit_sparse_mla.py
 @@ -0,0 +1,1171 @@
@@ -21760,7 +22318,7 @@ index 000000000..16d22c7cd
 +                    tcap, (T + tcap - 1) // tcap, int(capturing), _pfc_launches)
 +    return True
 diff --git a/vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py b/vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py
-index 2a944d061..d4807a5f7 100644
+index 2a944d0618..d4807a5f74 100644
 --- a/vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py
 +++ b/vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py
 @@ -148,6 +148,7 @@ class FlashInferMLASparseSM120Backend(_FlashInferMLASparseBackendBase):
@@ -21791,7 +22349,7 @@ index 2a944d061..d4807a5f7 100644
              # fp8_ds_mla packed layout: 512 NoPE + 16 scales + 128 RoPE.
              return (num_blocks, block_size, 656)
 diff --git a/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm120.py b/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm120.py
-index d802f5688..37dabd57d 100644
+index d802f56883..37dabd57db 100644
 --- a/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm120.py
 +++ b/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm120.py
 @@ -32,6 +32,13 @@ def _kv_scale_format_for_model(model_type: str | None) -> str:
@@ -21946,7 +22504,7 @@ index d802f5688..37dabd57d 100644
 +            return out, lse
          return out.squeeze(1), None
 diff --git a/vllm/v1/attention/backends/mla/indexer.py b/vllm/v1/attention/backends/mla/indexer.py
-index 0bc7ca7aa..ae31f0175 100644
+index 0bc7ca7aa4..ae31f01751 100644
 --- a/vllm/v1/attention/backends/mla/indexer.py
 +++ b/vllm/v1/attention/backends/mla/indexer.py
 @@ -26,6 +26,10 @@ from vllm.v1.attention.backends.mla.compressor_utils import get_compressed_slot_
@@ -22180,7 +22738,7 @@ index 0bc7ca7aa..ae31f0175 100644
              seq_start + seq_len_per_token,
 diff --git a/vllm/v1/attention/backends/mla/nvfp4_ds_mla_cache.py b/vllm/v1/attention/backends/mla/nvfp4_ds_mla_cache.py
 new file mode 100644
-index 000000000..858c4d2cc
+index 0000000000..858c4d2cc4
 --- /dev/null
 +++ b/vllm/v1/attention/backends/mla/nvfp4_ds_mla_cache.py
 @@ -0,0 +1,64 @@
@@ -22250,7 +22808,7 @@ index 000000000..858c4d2cc
 +                                         slot_mapping)
 diff --git a/vllm/v1/attention/backends/mla/sparse_mla_env.py b/vllm/v1/attention/backends/mla/sparse_mla_env.py
 new file mode 100644
-index 000000000..931614177
+index 0000000000..9316141777
 --- /dev/null
 +++ b/vllm/v1/attention/backends/mla/sparse_mla_env.py
 @@ -0,0 +1,216 @@
@@ -22471,7 +23029,7 @@ index 000000000..931614177
 +    except ValueError:
 +        return 8192
 diff --git a/vllm/v1/attention/backends/mla/sparse_swa.py b/vllm/v1/attention/backends/mla/sparse_swa.py
-index df23f3437..962c098f8 100644
+index df23f34378..962c098f85 100644
 --- a/vllm/v1/attention/backends/mla/sparse_swa.py
 +++ b/vllm/v1/attention/backends/mla/sparse_swa.py
 @@ -306,16 +306,19 @@ class DeepseekSparseSWAMetadataBuilder(AttentionMetadataBuilder):
@@ -22679,7 +23237,7 @@ index df23f3437..962c098f8 100644
 +            mask=offset < index_width,
 +        )
 diff --git a/vllm/v1/attention/backends/mla/sparse_utils.py b/vllm/v1/attention/backends/mla/sparse_utils.py
-index e4bd0cf42..ca4996968 100644
+index e4bd0cf425..ca4996968d 100644
 --- a/vllm/v1/attention/backends/mla/sparse_utils.py
 +++ b/vllm/v1/attention/backends/mla/sparse_utils.py
 @@ -23,6 +23,12 @@ def _convert_req_index_to_global_index_kernel(
@@ -22742,7 +23300,7 @@ index e4bd0cf42..ca4996968 100644
          bt_stride1,
 diff --git a/vllm/v1/attention/ops/dcp_sparse_topk.py b/vllm/v1/attention/ops/dcp_sparse_topk.py
 new file mode 100644
-index 000000000..8a93910d6
+index 0000000000..8a93910d68
 --- /dev/null
 +++ b/vllm/v1/attention/ops/dcp_sparse_topk.py
 @@ -0,0 +1,146 @@
@@ -22893,7 +23451,7 @@ index 000000000..8a93910d6
 +    merged.masked_fill_(top_scores == float("-inf"), -1)
 +    return merged
 diff --git a/vllm/v1/attention/ops/merge_attn_states.py b/vllm/v1/attention/ops/merge_attn_states.py
-index cf4338fb1..f0577501e 100644
+index cf4338fb18..f0577501e9 100644
 --- a/vllm/v1/attention/ops/merge_attn_states.py
 +++ b/vllm/v1/attention/ops/merge_attn_states.py
 @@ -46,6 +46,19 @@ def merge_attn_states(
@@ -22917,7 +23475,7 @@ index cf4338fb1..f0577501e 100644
      # does not support FP8 dtype for inputs, fallback to use Triton kernel.
      # However, when output_scale is provided, the inputs are still BF16/FP16
 diff --git a/vllm/v1/attention/ops/triton_decode_attention.py b/vllm/v1/attention/ops/triton_decode_attention.py
-index dbe3c5705..f12d719fb 100644
+index dbe3c5705d..f12d719fba 100644
 --- a/vllm/v1/attention/ops/triton_decode_attention.py
 +++ b/vllm/v1/attention/ops/triton_decode_attention.py
 @@ -530,6 +530,13 @@ def _decode_grouped_att_m_fwd(
@@ -22935,7 +23493,7 @@ index dbe3c5705..f12d719fb 100644
      _fwd_grouped_kernel_stage1[grid](
          q,
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 90d93a110..20aef47c2 100644
+index 90d93a110c..d474d29b2d 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -57,7 +57,10 @@ from vllm.v1.metrics.perf import ModelMetrics, PerfStats
@@ -22976,7 +23534,7 @@ index 90d93a110..20aef47c2 100644
  
              # Free encoder inputs only after the step has actually executed.
              if request.has_encoder_inputs:
-@@ -1596,17 +1611,28 @@ class Scheduler(SchedulerInterface):
+@@ -1596,17 +1611,30 @@ class Scheduler(SchedulerInterface):
                  request.status = RequestStatus.FINISHED_STOPPED
                  stopped = True
  
@@ -22999,8 +23557,10 @@ index 90d93a110..20aef47c2 100644
 +                        request, new_token_ids
 +                    )
 +                )
-+                if advance_token_ids and not grammar.accept_tokens(
-+                    req_id, advance_token_ids
++                if (
++                    advance_token_ids
++                    and not grammar.is_terminated()
++                    and not grammar.accept_tokens(req_id, advance_token_ids)
                  ):
                      logger.error(
                          "Unexpected: grammar rejected tokens %s for request %s. "
@@ -23010,7 +23570,28 @@ index 90d93a110..20aef47c2 100644
                          req_id,
                      )
                      request.status = RequestStatus.FINISHED_ERROR
-@@ -2263,6 +2289,17 @@ class Scheduler(SchedulerInterface):
+@@ -1916,7 +1944,9 @@ class Scheduler(SchedulerInterface):
+             # Add newly generated spec token ids to the request.
+             if self.structured_output_manager.should_advance(request):
+                 metadata = request.structured_output_request
+-                spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)  # type: ignore[union-attr]
++                assert metadata is not None and metadata.grammar is not None
++                if not metadata.grammar.is_terminated():
++                    spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)
+             request.spec_token_ids = spec_token_ids
+ 
+     def update_draft_token_ids_in_output(
+@@ -1946,7 +1976,8 @@ class Scheduler(SchedulerInterface):
+             if self.structured_output_manager.should_advance(request):
+                 metadata = request.structured_output_request
+                 assert metadata is not None and metadata.grammar is not None
+-                spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)
++                if not metadata.grammar.is_terminated():
++                    spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)
+             # Pad to original number of spec tokens.
+             num_invalid_tokens = orig_num_spec_tokens - len(spec_token_ids)
+             if num_invalid_tokens:
+@@ -2263,6 +2294,17 @@ class Scheduler(SchedulerInterface):
              perf_stats=perf_stats,
          )
  
@@ -23029,7 +23610,7 @@ index 90d93a110..20aef47c2 100644
          self,
          spec_decoding_stats: SpecDecodingStats | None,
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index f97f697de..df3827905 100644
+index f97f697ded..df3827905c 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
 @@ -147,6 +147,43 @@ class EngineCore:
@@ -23088,7 +23669,7 @@ index f97f697de..df3827905 100644
          self.check_for_draft_tokens = (
              self.use_spec_decode or vllm_config.model_config.is_diffusion
 diff --git a/vllm/v1/kv_cache_interface.py b/vllm/v1/kv_cache_interface.py
-index 5a2a5c5e2..33c628e8e 100644
+index 5a2a5c5e29..33c628e8e1 100644
 --- a/vllm/v1/kv_cache_interface.py
 +++ b/vllm/v1/kv_cache_interface.py
 @@ -382,6 +382,10 @@ class MLAAttentionSpec(FullAttentionSpec):
@@ -23103,7 +23684,7 @@ index 5a2a5c5e2..33c628e8e 100644
              if self.model_version == "deepseek_v4":
                  # DeepseekV4: 448B NoPE + 128B RoPE + 8B fp8 scale = 584B per token.
 diff --git a/vllm/v1/spec_decode/dynamic/utils.py b/vllm/v1/spec_decode/dynamic/utils.py
-index de869b19a..348eaf2e9 100644
+index de869b19a7..348eaf2e9a 100644
 --- a/vllm/v1/spec_decode/dynamic/utils.py
 +++ b/vllm/v1/spec_decode/dynamic/utils.py
 @@ -1,8 +1,16 @@
@@ -23240,8 +23821,35 @@ index de869b19a..348eaf2e9 100644
 +            vllm_max_batch_size=self._max_num_seqs,
 +            vllm_num_speculative_tokens=self._num_spec_tokens,
 +        )
+diff --git a/vllm/v1/spec_decode/llm_base_proposer.py b/vllm/v1/spec_decode/llm_base_proposer.py
+index 9f46cbd242..ccb4e0826e 100644
+--- a/vllm/v1/spec_decode/llm_base_proposer.py
++++ b/vllm/v1/spec_decode/llm_base_proposer.py
+@@ -337,6 +337,10 @@ class SpecDecodeBaseProposer:
+         dflash_config = getattr(model_hf_config, "dflash_config", None)
+         if dflash_config and "mask_token_id" in dflash_config:
+             self.parallel_drafting_token_id = dflash_config["mask_token_id"]
++        elif getattr(model_hf_config, "mask_token_id", None) is not None:
++            self.parallel_drafting_token_id = model_hf_config.mask_token_id
++        elif hasattr(model_hf_config, "dspark_noise_token_id"):
++            self.parallel_drafting_token_id = model_hf_config.dspark_noise_token_id
+         elif hasattr(model_hf_config, "pard_token"):
+             self.parallel_drafting_token_id = model_hf_config.pard_token
+         elif hasattr(model_hf_config, "ptd_token_id"):
+@@ -344,8 +348,9 @@ class SpecDecodeBaseProposer:
+         else:
+             raise ValueError(
+                 "For parallel drafting, the draft model config must have "
+-                "`pard_token`, `ptd_token_id`, or "
+-                "`dflash_config.mask_token_id` specified in its config.json."
++                "`dflash_config.mask_token_id`, `mask_token_id`, "
++                "`dspark_noise_token_id`, `pard_token`, or `ptd_token_id` "
++                "specified in its config.json."
+             )
+ 
+         if self.pass_hidden_states_to_model:
 diff --git a/vllm/v1/structured_output/__init__.py b/vllm/v1/structured_output/__init__.py
-index 30921f3d7..8151c040e 100644
+index 30921f3d74..020a7f3bf0 100644
 --- a/vllm/v1/structured_output/__init__.py
 +++ b/vllm/v1/structured_output/__init__.py
 @@ -2,12 +2,11 @@
@@ -23276,7 +23884,25 @@ index 30921f3d7..8151c040e 100644
  class StructuredOutputManager:
      """Engine-level manager for structured output requests."""
  
-@@ -272,23 +267,69 @@ class StructuredOutputManager:
+@@ -181,7 +176,16 @@ class StructuredOutputManager:
+         request_type, grammar_spec = key
+ 
+         assert self.backend is not None
+-        return self.backend.compile_grammar(request_type, grammar_spec)
++        stop_token_ids = (
++            request.sampling_params.all_stop_token_ids
++            if request.sampling_params is not None
++            else None
++        )
++        return self.backend.compile_grammar(
++            request_type,
++            grammar_spec,
++            stop_token_ids=stop_token_ids,
++        )
+ 
+     def _fill_bitmasks(
+         self, batch: Iterable[tuple[StructuredOutputGrammar, int, bool]]
+@@ -272,23 +276,90 @@ class StructuredOutputManager:
                  grammar = structured_output_request.grammar
                  apply_bitmask = self.should_fill_bitmask(request)
  
@@ -23291,6 +23917,7 @@ index 30921f3d7..8151c040e 100644
 +
                  state_advancements = 0
 +                post_reasoning_end_in_window = False
++                post_reasoning_prefix_valid = True
                  req_tokens = scheduled_spec_decode_tokens.get(req_id, ())
 -                if self.vllm_config.model_config.is_diffusion and req_tokens:
 -                    # Diffusion LLMs don't sample a bonus token after the
@@ -23306,6 +23933,9 @@ index 30921f3d7..8151c040e 100644
 -                        # Stop advancing the grammar once we hit a padding token.
                          apply_bitmask = False
 -                    if apply_bitmask and not grammar.is_terminated():
+-                        accepted = grammar.accept_tokens(req_id, [token])
+-                        assert accepted, (token, req_id, scheduled_spec_decode_tokens)
+-                        state_advancements += 1
 +                        advance_grammar = False
 +                    elif (
 +                        detect_reasoning_end
@@ -23329,9 +23959,27 @@ index 30921f3d7..8151c040e 100644
 +                            advance_grammar = False
 +                            post_reasoning_end_in_window = True
 +                    if advance_grammar and not grammar.is_terminated():
-                         accepted = grammar.accept_tokens(req_id, [token])
--                        assert accepted, (token, req_id, scheduled_spec_decode_tokens)
--                        state_advancements += 1
++                        if post_reasoning_end_in_window:
++                            # These drafts were produced before the grammar
++                            # became active. Probe without logging an expected
++                            # rejection, then persist only valid transitions.
++                            # Once one draft is rejected, the speculative
++                            # suffix is unreachable and must not be probed
++                            # against a state that omitted that draft.
++                            accepted = post_reasoning_prefix_valid and (
++                                grammar.validate_tokens([token]) == [token]
++                            )
++                            if not accepted:
++                                post_reasoning_prefix_valid = False
++                            elif not grammar.accept_tokens(req_id, [token]):
++                                # Validation is non-advancing. If the same
++                                # transition cannot then be persisted, fail
++                                # closed rather than hiding inconsistent state.
++                                raise AssertionError(
++                                    (token, req_id, scheduled_spec_decode_tokens)
++                                )
++                        else:
++                            accepted = grammar.accept_tokens(req_id, [token])
 +                        if accepted:
 +                            state_advancements += 1
 +                        elif not post_reasoning_end_in_window:
@@ -23357,7 +24005,7 @@ index 30921f3d7..8151c040e 100644
                      cumulative_index += 1
                  if state_advancements > 0:
                      grammar.rollback(state_advancements)
-@@ -322,7 +363,11 @@ class StructuredOutputManager:
+@@ -322,7 +393,11 @@ class StructuredOutputManager:
              return request.structured_output_request.reasoning_ended
          return True
  
@@ -23370,7 +24018,7 @@ index 30921f3d7..8151c040e 100644
          if not request.use_structured_output:
              return False
  
-@@ -345,33 +390,86 @@ class StructuredOutputManager:
+@@ -345,33 +420,86 @@ class StructuredOutputManager:
          if structured_req.reasoning_ended:
              return True
  
@@ -23478,8 +24126,121 @@ index 30921f3d7..8151c040e 100644
      def clear_backend(self) -> None:
          if self.backend is not None:
              self.backend.destroy()
+diff --git a/vllm/v1/structured_output/backend_guidance.py b/vllm/v1/structured_output/backend_guidance.py
+index 31178e9f24..795278bea3 100644
+--- a/vllm/v1/structured_output/backend_guidance.py
++++ b/vllm/v1/structured_output/backend_guidance.py
+@@ -101,7 +101,10 @@ class GuidanceBackend(StructuredOutputBackend):
+             )
+ 
+     def compile_grammar(
+-        self, request_type: StructuredOutputOptions, grammar_spec: str
++        self,
++        request_type: StructuredOutputOptions,
++        grammar_spec: str,
++        stop_token_ids: set[int] | None = None,
+     ) -> StructuredOutputGrammar:
+         self.serialized_grammar = serialize_guidance_grammar(
+             request_type,
+diff --git a/vllm/v1/structured_output/backend_lm_format_enforcer.py b/vllm/v1/structured_output/backend_lm_format_enforcer.py
+index bbda96e60b..1caceccbfe 100644
+--- a/vllm/v1/structured_output/backend_lm_format_enforcer.py
++++ b/vllm/v1/structured_output/backend_lm_format_enforcer.py
+@@ -98,7 +98,10 @@ class LMFormatEnforcerBackend(StructuredOutputBackend):
+         )
+ 
+     def compile_grammar(
+-        self, request_type: StructuredOutputOptions, grammar_spec: str
++        self,
++        request_type: StructuredOutputOptions,
++        grammar_spec: str,
++        stop_token_ids: set[int] | None = None,
+     ) -> StructuredOutputGrammar:
+         character_level_parser: lmformatenforcer.CharacterLevelParser
+         if request_type == StructuredOutputOptions.JSON:
+diff --git a/vllm/v1/structured_output/backend_outlines.py b/vllm/v1/structured_output/backend_outlines.py
+index 91627ff154..e66ef6361a 100644
+--- a/vllm/v1/structured_output/backend_outlines.py
++++ b/vllm/v1/structured_output/backend_outlines.py
+@@ -71,7 +71,10 @@ class OutlinesBackend(StructuredOutputBackend):
+         return index
+ 
+     def compile_grammar(
+-        self, request_type: StructuredOutputOptions, grammar_spec: str
++        self,
++        request_type: StructuredOutputOptions,
++        grammar_spec: str,
++        stop_token_ids: set[int] | None = None,
+     ) -> StructuredOutputGrammar:
+         if request_type == StructuredOutputOptions.JSON:
+             regex = json_schema.build_regex_from_schema(grammar_spec)
+diff --git a/vllm/v1/structured_output/backend_types.py b/vllm/v1/structured_output/backend_types.py
+index 5c09b7b063..129e86a95e 100644
+--- a/vllm/v1/structured_output/backend_types.py
++++ b/vllm/v1/structured_output/backend_types.py
+@@ -105,7 +105,10 @@ class StructuredOutputBackend(ABC):
+ 
+     @abstractmethod
+     def compile_grammar(
+-        self, request_type: StructuredOutputOptions, grammar_spec: str
++        self,
++        request_type: StructuredOutputOptions,
++        grammar_spec: str,
++        stop_token_ids: set[int] | None = None,
+     ) -> StructuredOutputGrammar:
+         """
+         Compiles a grammar specification into a structured output grammar.
+@@ -114,6 +117,8 @@ class StructuredOutputBackend(ABC):
+             request_type (StructuredOutputOptions): The type of structured
+                 output request.
+             grammar_spec (str): The grammar specification to compile.
++            stop_token_ids (set[int] | None): The request's EOS and user
++                stop-token ids, masked until the grammar terminates.
+ 
+         Returns:
+             StructuredOutputGrammar: The compiled structured output grammar.
+diff --git a/vllm/v1/structured_output/backend_xgrammar.py b/vllm/v1/structured_output/backend_xgrammar.py
+index 4f199a1a27..b4a1eaa6de 100644
+--- a/vllm/v1/structured_output/backend_xgrammar.py
++++ b/vllm/v1/structured_output/backend_xgrammar.py
+@@ -76,7 +76,10 @@ class XgrammarBackend(StructuredOutputBackend):
+             )
+ 
+     def compile_grammar(
+-        self, request_type: StructuredOutputOptions, grammar_spec: str
++        self,
++        request_type: StructuredOutputOptions,
++        grammar_spec: str,
++        stop_token_ids: set[int] | None = None,
+     ) -> StructuredOutputGrammar:
+         if request_type == StructuredOutputOptions.JSON:
+             ctx = self.compiler.compile_json_schema(
+@@ -119,6 +122,7 @@ class XgrammarBackend(StructuredOutputBackend):
+         return XgrammarGrammar(
+             matcher=xgr.GrammarMatcher(
+                 ctx,
++                override_stop_tokens=list(stop_token_ids) if stop_token_ids else None,
+                 max_rollback_tokens=self.num_speculative_tokens,
+             ),
+             vocab_size=self.vocab_size,
+@@ -158,7 +162,15 @@ class XgrammarGrammar(StructuredOutputGrammar):
+         if self._is_terminated:
+             return False
+         for token in tokens:
++            if self.matcher.is_terminated():
++                # A speculative batch may contain tokens after the stop token.
++                # Do not feed those trailing drafts to a terminated matcher.
++                self._is_terminated = True
++                break
+             if not self.matcher.accept_token(token):
++                # Keep the cached state synchronized if the matcher terminates
++                # while rejecting a token (vllm-project/vllm#37506).
++                self._is_terminated = self.matcher.is_terminated()
+                 logger.error(
+                     "Failed to advance FSM for request %s "
+                     "for tokens %s. Please file an issue.",
 diff --git a/vllm/v1/structured_output/request.py b/vllm/v1/structured_output/request.py
-index dfa8c7efc..f9ab54a04 100644
+index dfa8c7efca..f9ab54a047 100644
 --- a/vllm/v1/structured_output/request.py
 +++ b/vllm/v1/structured_output/request.py
 @@ -23,6 +23,12 @@ class StructuredOutputRequest:
@@ -23496,7 +24257,7 @@ index dfa8c7efc..f9ab54a04 100644
      # Cached per request; do not share reasoning parsers across requests because
      # their behavior can depend on reasoning_parser_kwargs.
 diff --git a/vllm/v1/worker/gpu/cudagraph_utils.py b/vllm/v1/worker/gpu/cudagraph_utils.py
-index dad1777b4..358acf464 100644
+index dad1777b47..358acf464c 100644
 --- a/vllm/v1/worker/gpu/cudagraph_utils.py
 +++ b/vllm/v1/worker/gpu/cudagraph_utils.py
 @@ -109,6 +109,13 @@ def get_uniform_token_count(
@@ -23626,7 +24387,7 @@ index dad1777b4..358acf464 100644
          self.hidden_states: torch.Tensor | None = None
          self.aux_hidden_states: list[torch.Tensor] = []
 diff --git a/vllm/v1/worker/gpu/input_batch.py b/vllm/v1/worker/gpu/input_batch.py
-index 6b750fe7e..167ad6851 100644
+index 6b750fe7eb..167ad68511 100644
 --- a/vllm/v1/worker/gpu/input_batch.py
 +++ b/vllm/v1/worker/gpu/input_batch.py
 @@ -93,6 +93,11 @@ class InputBatch:
@@ -23702,7 +24463,7 @@ index 6b750fe7e..167ad6851 100644
          # last sampled token in addition to all draft tokens.
          BLOCK_SIZE=triton.next_power_of_2(
 diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
-index 30ca2ddc5..fe746ec0d 100644
+index 30ca2ddc56..fe746ec0de 100644
 --- a/vllm/v1/worker/gpu/model_runner.py
 +++ b/vllm/v1/worker/gpu/model_runner.py
 @@ -47,6 +47,7 @@ from vllm.tasks import SupportedTask
@@ -24075,7 +24836,7 @@ index 30ca2ddc5..fe746ec0d 100644
          kv_connector_output = self.kv_connector.post_forward(finished_req_ids)
          model_runner_output.kv_connector_output = kv_connector_output
 diff --git a/vllm/v1/worker/gpu/sample/gumbel.py b/vllm/v1/worker/gpu/sample/gumbel.py
-index fab53fef7..7bacdbc51 100644
+index fab53fef7e..7bacdbc51d 100644
 --- a/vllm/v1/worker/gpu/sample/gumbel.py
 +++ b/vllm/v1/worker/gpu/sample/gumbel.py
 @@ -213,6 +213,11 @@ def gumbel_sample(
@@ -24091,7 +24852,7 @@ index fab53fef7..7bacdbc51 100644
      BLOCK_SIZE = 1024
      num_blocks = triton.cdiv(vocab_size, BLOCK_SIZE)
 diff --git a/vllm/v1/worker/gpu/spec_decode/__init__.py b/vllm/v1/worker/gpu/spec_decode/__init__.py
-index 09153dd20..c70f169f7 100644
+index 09153dd20f..c70f169f7b 100644
 --- a/vllm/v1/worker/gpu/spec_decode/__init__.py
 +++ b/vllm/v1/worker/gpu/spec_decode/__init__.py
 @@ -14,6 +14,12 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
@@ -24108,7 +24869,7 @@ index 09153dd20..c70f169f7 100644
          from vllm.v1.worker.gpu.spec_decode.gemma4.speculator import (
              Gemma4Speculator,
 diff --git a/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py b/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
-index 1bd130838..06a4e449e 100644
+index 1bd130838a..06a4e449e4 100644
 --- a/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
 +++ b/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
 @@ -29,6 +29,8 @@ logger = init_logger(__name__)
@@ -24466,7 +25227,7 @@ index 1bd130838..06a4e449e 100644
      )
 diff --git a/vllm/v1/worker/gpu/spec_decode/dspark/__init__.py b/vllm/v1/worker/gpu/spec_decode/dspark/__init__.py
 new file mode 100644
-index 000000000..208f01a7c
+index 0000000000..208f01a7cb
 --- /dev/null
 +++ b/vllm/v1/worker/gpu/spec_decode/dspark/__init__.py
 @@ -0,0 +1,2 @@
@@ -24474,7 +25235,7 @@ index 000000000..208f01a7c
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 diff --git a/vllm/v1/worker/gpu/spec_decode/dspark/scheduler.py b/vllm/v1/worker/gpu/spec_decode/dspark/scheduler.py
 new file mode 100644
-index 000000000..20c41524c
+index 0000000000..20c41524cd
 --- /dev/null
 +++ b/vllm/v1/worker/gpu/spec_decode/dspark/scheduler.py
 @@ -0,0 +1,389 @@
@@ -24869,7 +25630,7 @@ index 000000000..20c41524c
 +        self._prev_sched_l = length
 diff --git a/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py b/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
 new file mode 100644
-index 000000000..88841d5f4
+index 0000000000..88841d5f41
 --- /dev/null
 +++ b/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
 @@ -0,0 +1,302 @@
@@ -25177,7 +25938,7 @@ index 000000000..88841d5f4
 +        self._sample_sequential(num_reqs, head_hidden)
 diff --git a/vllm/v1/worker/gpu/spec_decode/dspark/utils.py b/vllm/v1/worker/gpu/spec_decode/dspark/utils.py
 new file mode 100644
-index 000000000..b5f2a540a
+index 0000000000..b5f2a540aa
 --- /dev/null
 +++ b/vllm/v1/worker/gpu/spec_decode/dspark/utils.py
 @@ -0,0 +1,76 @@
@@ -25258,7 +26019,7 @@ index 000000000..b5f2a540a
 +
 +    return draft_model
 diff --git a/vllm/v1/worker/gpu/spec_decode/eagle/eagle3_utils.py b/vllm/v1/worker/gpu/spec_decode/eagle/eagle3_utils.py
-index 360f64921..66d0ba8b4 100644
+index 360f64921e..66d0ba8b43 100644
 --- a/vllm/v1/worker/gpu/spec_decode/eagle/eagle3_utils.py
 +++ b/vllm/v1/worker/gpu/spec_decode/eagle/eagle3_utils.py
 @@ -44,6 +44,15 @@ def get_eagle3_aux_layers_from_config(
@@ -25278,7 +26039,7 @@ index 360f64921..66d0ba8b4 100644
          return tuple(layer_ids)
      return None
 diff --git a/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py b/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py
-index 3868604d3..5e7cadc68 100644
+index 3868604d3a..5e7cadc686 100644
 --- a/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py
 +++ b/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py
 @@ -100,12 +100,22 @@ class RejectionSampler:
@@ -25305,7 +26066,7 @@ index 3868604d3..5e7cadc68 100644
          processed_logits = self.sampler.apply_sampling_params(
              logits,
 diff --git a/vllm/v1/worker/gpu/spec_decode/utils.py b/vllm/v1/worker/gpu/spec_decode/utils.py
-index 4ab45b2ae..35a89634e 100644
+index 4ab45b2ae2..35a89634ee 100644
 --- a/vllm/v1/worker/gpu/spec_decode/utils.py
 +++ b/vllm/v1/worker/gpu/spec_decode/utils.py
 @@ -16,35 +16,58 @@ class DraftTokensHandler:
@@ -25406,7 +26167,7 @@ index 4ab45b2ae..35a89634e 100644
 +        " `ptd_token_id` for parallel drafting."
      )
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index 74938a823..98efecb5e 100644
+index 74938a823d..98efecb5e1 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
 @@ -4,6 +4,7 @@
@@ -26687,7 +27448,7 @@ index 74938a823..98efecb5e 100644
              or self.speculative_config.uses_extract_hidden_states()
          ):
 diff --git a/vllm/v1/worker/gpu_ubatch_wrapper.py b/vllm/v1/worker/gpu_ubatch_wrapper.py
-index 657fc8267..dee74ffb4 100644
+index 657fc82673..dee74ffb4b 100644
 --- a/vllm/v1/worker/gpu_ubatch_wrapper.py
 +++ b/vllm/v1/worker/gpu_ubatch_wrapper.py
 @@ -278,6 +278,9 @@ class UBatchWrapper:
@@ -26701,7 +27462,7 @@ index 657fc8267..dee74ffb4 100644
                  ubatch_metadata[0].context.cpu_wait_event.set()
                  for thread in ubatch_threads:
 diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
-index 5e266a313..4bf3b010c 100644
+index 5e266a3135..4bf3b010c3 100644
 --- a/vllm/v1/worker/gpu_worker.py
 +++ b/vllm/v1/worker/gpu_worker.py
 @@ -383,6 +383,29 @@ class Worker(WorkerBase):
@@ -26980,7 +27741,7 @@ index 5e266a313..4bf3b010c 100644
      def elastic_ep_execute(self, execute_method: str, *args, **kwargs):
          return self.elastic_ep_executor.execute(execute_method, *args, **kwargs)
 diff --git a/vllm/v1/worker/utils.py b/vllm/v1/worker/utils.py
-index c0f44b6db..2ea8a014a 100644
+index c0f44b6db0..2ea8a014a2 100644
 --- a/vllm/v1/worker/utils.py
 +++ b/vllm/v1/worker/utils.py
 @@ -40,10 +40,12 @@ logger = init_logger(__name__)

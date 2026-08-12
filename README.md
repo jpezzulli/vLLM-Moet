@@ -189,11 +189,36 @@ one-million-token concurrency, tensor parallelism, sustained soak or reload,
 another GPU or checkpoint, or DSpark-4 support inside the historical v4 OCI
 container.
 
+## EXL3 M=8 readiness
+
+The maintained runtime now includes Kacper's EXL3 base+delta serving line from
+publication `66ec4e7f5b098827f5f759779f874737715bb841` (runtime source
+`b02ae23bcb5ba9c1e3d74acba0d11586e547b747`), including the M=1 wave path and
+M=2 through M=8 eager and capture-safe CUDA-graph routes. The matching SM120
+M8/m8g canons, cubins, SASS, and map-builder tests are published here.
+
+EXL3 is **not enabled** in the Penny recipe. It requires model-specific EXL3
+base and residual-delta packs with the exact pack-v3 geometry expected by the
+runtime, plus the matching exllamav3 extension entry points. Kacper's public
+repository currently publishes the serving implementation and kernels but not
+the referenced base/delta pack builders or compatible DeepSeek-V4-Flash pack
+artifacts. The existing 2-bit planes and 12 MiB FP4 correction packs are not
+interchangeable with those EXL3 inputs.
+
+The reconciliation was therefore validated with the existing production
+geometry unchanged. It completed all graph captures, reported 1,058,042 KV
+tokens, placed layers 38–42 in 9,059,696,640 bytes of NUMA-local mapped host
+memory with zero redundant complete GPU W2 bytes, and passed bounded arithmetic
+and exact tool-call smoke requests. This maintenance smoke does not replace
+the frozen quality or long-context results above. EXL3 activation requires a
+separate candidate and proportional qualification after the pack tooling is
+available.
+
 ## Repository map
 
 - `scripts/` — pinned native build, final production launcher, and API validation
 - `bench/recipes/` — machine-readable serving recipes and historical benchmark matrix
-- `patch/` — sanctioned generated patch for runtime `e89479ec2`
+- `patch/` — sanctioned generated patch for the runtime in `patch/SOURCE.txt`
 - `kernels/` — Kacper's SM120 SASS, generated cubins, and manifests
 - `container/` and `Containerfile.ds4flash-0731-sm120` — historical OCI v4
   material, reproduced exactly from tag `history/oci-v4-20260802`

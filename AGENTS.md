@@ -52,6 +52,11 @@ reviewable and proportional to what actually changed.
   submit it through a pull request to that repository's canonical branch. Do
   not leave validated changes only on the host or push them directly to a
   canonical branch.
+- Pull requests in `jpezzulli`-owned repositories are the durable review and
+  provenance record. After their required checks pass, merge completed work,
+  remove its temporary branch and worktree, and leave the canonical branch
+  clean and current. For this publication repository, that canonical branch is
+  `rtx-pro6000`; it must contain all completed published work at task handoff.
 - A commit, push, or pull request to any repository not owned by `jpezzulli`
   requires the owner's explicit authorization for that specific upstream
   publication. Local inspection, fetching, and adaptation do not grant

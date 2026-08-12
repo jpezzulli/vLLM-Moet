@@ -25,6 +25,43 @@ reviewable and proportional to what actually changed.
   force-push, rewrite shared history, use `git add -A` in a mixed worktree, or
   edit generated patch artifacts into agreement by hand.
 
+## Upstream maintenance and feature-adoption contract
+
+- Treat the current sanctioned runtime published by
+  `kacper-daftcode/vLLM-Moet` as the maintained MoET base. When that base
+  advances, ingest it first, then replay and adapt the Penny-specific runtime
+  commits as a reviewable patch series on top. Do not update by overwriting the
+  reconciled tree, dropping overlapping Penny changes, or preserving obsolete
+  base behavior merely because a conflict is difficult.
+- Evaluate every newly published MoET feature that could improve Penny's
+  correctness, quality, capacity, or performance. The goal is to activate
+  useful features after proportional validation, not merely to carry their
+  source disabled. If activation depends on unpublished pack builders,
+  extensions, model artifacts, or other prerequisites, record that exact
+  blocker and retain the reconciled source without claiming the feature is
+  usable.
+- Preserve the last hardware-validated serving shape until a candidate using
+  new upstream behavior passes its required focused and hardware validation.
+  Base reconciliation and feature activation may therefore be separate,
+  reviewable steps, but both remain part of the maintenance objective.
+
+## Repository publication contract
+
+- After implementation and proportional validation, commit every change to a
+  focused feature branch in the appropriate `jpezzulli`-owned repository and
+  submit it through a pull request to that repository's canonical branch. Do
+  not leave validated changes only on the host or push them directly to a
+  canonical branch.
+- Pull requests in `jpezzulli`-owned repositories are the durable review and
+  provenance record. After their required checks pass, merge completed work,
+  remove its temporary branch and worktree, and leave the canonical branch
+  clean and current. For this publication repository, that canonical branch is
+  `rtx-pro6000`; it must contain all completed published work at task handoff.
+- A commit, push, or pull request to any repository not owned by `jpezzulli`
+  requires the owner's explicit authorization for that specific upstream
+  publication. Local inspection, fetching, and adaptation do not grant
+  permission to publish to an upstream project.
+
 ## Proportional validation
 
 Run each unique test set once. Do not rerun overlapping subsets merely to

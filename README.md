@@ -1,5 +1,13 @@
 # DeepSeek V4 Flash on one RTX PRO 6000 Blackwell
 
+> **Attribution:** This work is built on
+> [`kacper-daftcode/vLLM-Moet`](https://github.com/kacper-daftcode/vLLM-Moet).
+> Kacper created the underlying SM120 runtime, W2 execution kernels, 2-bit
+> expert and FP4 recovery system, DSpark/Runner V2 integration, and broader
+> vLLM-MoET foundation. This fork adds targeted complete-layer mapped-host W2
+> placement, NUMA-aware allocation and auditing, the single-RTX-PRO recipe,
+> native reproduction path, and the validation reported here.
+
 This fork serves the official **DeepSeek-V4-Flash-0731** checkpoint on one
 **RTX PRO 6000 Blackwell Workstation Edition (96 GB)**. Selected complete W2
 layers live in NUMA-local, CUDA-mapped host memory and are read directly by
@@ -14,14 +22,20 @@ profile and a larger **524,288-token** profile.
 | Configured admission | 300,000 tokens | 524,288 tokens |
 | Runtime-reported KV capacity | 378,490 tokens | 901,924 tokens |
 | Exact uncached prefill exercised | 250,000 tokens | 500,000 tokens |
-| Prefill TTFT / wall-effective rate | 80.499 s / 3,105.64 tok/s | 274.690 s / 1,820.23 tok/s |
-| Server prefill interval | 24,998.6 tok/s, 0% cache hit | 49,974.3 tok/s, 0% cache hit |
+| **Server-reported prompt throughput** | **24,998.6 tok/s**, 0% cache hit | **49,974.3 tok/s**, 0% cache hit |
+| Supplemental client TTFT / prompt÷TTFT | 80.499 s / 3,105.64 tok/s | 274.690 s / 1,820.23 tok/s |
 | Exact 1×1,024 decode after first token | 89.82 tok/s | 68.23 tok/s |
 | Exact 4×1,024 aggregate generation | 152.31 tok/s | 126.83 tok/s |
 
-The prefill server intervals are coarse engine telemetry; the wall-effective
-rates include the complete request path and are the directly comparable
-end-to-end figures. Decode rate varies with generated content: an earlier
+The bold prefill values are the literal numbers emitted by vLLM's standard
+service logger. For these unusually long prefills, the logger emitted no
+periodic throughput line while the GPU was occupied, then attributed the
+completed prompt-token count to one nominal reporting interval. Consequently,
+`24,998.6` and `49,974.3` are preserved as server-reported counters but must
+not be interpreted as sustained physical prefill rates. The client-derived
+TTFT values require a separate timing harness and provide the corresponding
+request-wall measurements. Both requests reported 0% prefix-cache hit.
+Decode rate varies with generated content: an earlier
 300K exact 1,024-token run measured 73.63 tok/s, while the deliberately
 captured 1×/4× baseline measured 89.82 tok/s. The 512K profile's 500K request
 decoded at 85.56 tok/s after prefill. These are bounded measurements, not a
@@ -43,14 +57,6 @@ profile.
 | [Post-prefill decode](validation/README.md#opt-in-near-million-token-needle) | **64.12 tok/s** |
 | [Immediate follow-up](validation/README.md#opt-in-near-million-token-needle) | Correct: `37 + 58` returned `95` |
 | Lowest directly sampled physical VRAM free | **119 MiB** during the long-context run |
-
-> **Attribution:** This work is built on
-> [`kacper-daftcode/vLLM-Moet`](https://github.com/kacper-daftcode/vLLM-Moet).
-> Kacper created the underlying SM120 runtime, W2 execution kernels, 2-bit
-> expert and FP4 recovery system, DSpark/Runner V2 integration, and broader
-> vLLM-MoET foundation. This fork adds targeted complete-layer mapped-host W2
-> placement, NUMA-aware allocation and auditing, the single-RTX-PRO recipe,
-> native reproduction path, and the validation reported here.
 
 ## What changed
 

@@ -1,13 +1,37 @@
 # DeepSeek V4 Flash on one RTX PRO 6000 Blackwell
 
 This fork serves the official **DeepSeek-V4-Flash-0731** checkpoint on one
-**RTX PRO 6000 Blackwell Workstation Edition (96 GB)**. Five complete target
-W2 layers live in NUMA-local, CUDA-mapped host memory and are read directly by
-the existing SM120 kernels over PCIe. That releases enough VRAM for a 6 GiB
-FP4 correction tier, DSpark-4, and a practical **1,000,000-token admission
-limit**.
+**RTX PRO 6000 Blackwell Workstation Edition (96 GB)**. Selected complete W2
+layers live in NUMA-local, CUDA-mapped host memory and are read directly by
+the existing SM120 kernels over PCIe. Two current DSpark-4 profiles preserve
+the full target-only 6 GiB FP4 correction tier: a faster **300,000-token**
+profile and a larger **524,288-token** profile.
 
-| Validated result | Outcome |
+| Current profile | 300K performance | 512K capacity |
+|---|---:|---:|
+| Mapped W2 layers | DSpark 43–45 | target 42 + DSpark 43–45 |
+| Mapped host bytes | 5,435,817,984 | 7,247,757,312 |
+| Configured admission | 300,000 tokens | 524,288 tokens |
+| Runtime-reported KV capacity | 378,490 tokens | 901,924 tokens |
+| Exact uncached prefill exercised | 250,000 tokens | 500,000 tokens |
+| Prefill TTFT / wall-effective rate | 80.499 s / 3,105.64 tok/s | 274.690 s / 1,820.23 tok/s |
+| Server prefill interval | 24,998.6 tok/s, 0% cache hit | 49,974.3 tok/s, 0% cache hit |
+| Exact 1×1,024 decode after first token | 89.82 tok/s | 68.23 tok/s |
+| Exact 4×1,024 aggregate generation | 152.31 tok/s | 126.83 tok/s |
+
+The prefill server intervals are coarse engine telemetry; the wall-effective
+rates include the complete request path and are the directly comparable
+end-to-end figures. Decode rate varies with generated content: an earlier
+300K exact 1,024-token run measured 73.63 tok/s, while the deliberately
+captured 1×/4× baseline measured 89.82 tok/s. The 512K profile's 500K request
+decoded at 85.56 tok/s after prefill. These are bounded measurements, not a
+universal throughput guarantee.
+
+The frozen quality and near-million-token results below are preserved from
+the earlier five-target-layer profile; they were not rerun for either current
+profile.
+
+| Historical validated result | Outcome |
 |---|---:|
 | [Frozen reasoning quality](validation/README.md#frozen-reasoning-suite) | **97.07/100** |
 | [Tool/agent suite](validation/README.md#tool-and-agent-suite) | **30/30** exact tool selections and arguments |
@@ -30,20 +54,26 @@ limit**.
 
 ## What changed
 
-The production shape keeps dense weights, target W2 layers 0–37, and all
-three DSpark W2 layers 43–45 on the GPU. Complete target W2 layers **38–42**
-are constructed directly in pinned, GPU-local host memory:
+The mapped allocation path now supports a layer-scoped FP4 correction
+exclusion. This lets DSpark W2 layers 43–45 use mapped host memory while the
+shared 6 GiB correction pool remains target-only. The 300K profile keeps all
+target W2 layers in VRAM and maps DSpark layers 43–45. The 512K profile also
+maps complete target layer 42; target layer 42 remains eligible for FP4
+correction, while DSpark layers 43–45 remain excluded.
 
-- 1,811,939,328 bytes per mapped layer; 9,059,696,640 bytes total;
+Each selected complete W2 layer is constructed directly in pinned, GPU-local
+host memory:
+
+- 1,811,939,328 bytes per mapped layer;
 - one canonical allocation per layer, with no redundant complete GPU W2 copy;
 - automatic selected-GPU PCI/NUMA resolution with fail-closed locality checks;
 - stable UVA pointers retained through normal full and piecewise CUDA graphs;
 - direct kernel reads over PCIe, without a host-replay or GPU staging cache.
 
 The recovered VRAM is used for **512 × 12 MiB FP4 correction slots (6 GiB)**
-and FP8 MLA KV. The final launcher uses DSpark-4, four sequences, 2,048 maximum
-batched tokens, DeepGEMM, `--gpu-memory-utilization 0.974`, and
-`--max-model-len 1000000`.
+and FP8 MLA KV. The preferred capacity launcher uses DSpark-4, four sequences,
+2,048 maximum batched tokens, DeepGEMM,
+`--gpu-memory-utilization 0.98446`, and `--max-model-len 524288`.
 
 ## Verified cache-backed startup
 
@@ -118,10 +148,11 @@ were not rerun for this parser maintenance change.
 
 ## Why it matters
 
-Moving five complete W2 layers to CUDA-mapped, NUMA-local host memory frees
-VRAM for the KV cache and FP4 correction tier. The existing GPU kernels read
-those canonical weights directly over PCIe, without redundant complete GPU
-copies, host replay, or a GPU staging cache.
+Moving selected complete W2 layers to CUDA-mapped, NUMA-local host memory
+frees VRAM for the KV cache while keeping the target model's full 6 GiB FP4
+correction tier. The existing GPU kernels read those canonical weights
+directly over PCIe, without redundant complete GPU copies, host replay, or a
+GPU staging cache.
 
 ## Build and run
 
@@ -143,26 +174,27 @@ Read [BUILD-AND-RUN.md](BUILD-AND-RUN.md) before starting. It contains the
 hardware and host-memory contract, exact pinned sources, build details,
 startup checks, and expected audit geometry.
 
-## Validated production shape
+## Current serving profiles
 
-| Component | Setting |
-|---|---|
-| GPU | 1× RTX PRO 6000 Blackwell Workstation Edition, 96 GB |
-| Checkpoint | `deepseek-ai/DeepSeek-V4-Flash-0731` |
-| Runtime | Model Runner V2, DeepGEMM, full and piecewise CUDA graphs |
-| Mapped target W2 | layers 38–42, GPU-local NUMA host pages |
-| GPU-resident target W2 | layers 0–37 |
-| GPU-resident DSpark W2 | layers 43–45 |
-| Speculation | DSpark-4, greedy draft |
-| FP4 correction | 512 slots × 12 MiB = 6 GiB |
-| KV | FP8 MLA, 1,058,256 tokens reported in the final 1M shape |
-| Scheduler | 4 sequences, 2,048 maximum batched tokens |
-| Admission | 1,000,000 tokens |
+| Component | 300K performance | 512K capacity |
+|---|---|---|
+| GPU / checkpoint | 1× RTX PRO 6000 96 GB / DS4-Flash-0731 | same |
+| Runtime | Runner V2, DeepGEMM, full + piecewise graphs | same |
+| Mapped target W2 | none | layer 42 |
+| GPU-resident target W2 | layers 0–42 | layers 0–41 |
+| Mapped DSpark W2 | layers 43–45 | layers 43–45 |
+| Speculation | DSpark-4, greedy draft | same |
+| Target FP4 correction | 512 × 12 MiB = 6 GiB | same |
+| FP8 MLA KV capacity | 378,490 tokens reported | 901,924 tokens reported |
+| GPU utilization budget | 0.974 | 0.98446 |
+| Scheduler | 4 sequences, 2,048 batched tokens | same |
+| Configured admission | 300,000 tokens | 524,288 tokens |
 
-The 994,987-token test is an exceptional/batch workload, not an interactive
-context claim: TTFT was approximately **16 minutes**. The exact 1,048,576-token
-setting is not supported by the validated memory geometry and is deliberately
-not advertised.
+The older five-target-layer 1M profile remains valuable historical evidence:
+it correctly retrieved a needle from 994,987 input tokens, but took roughly
+16 minutes to first token. It is not the current serving recipe. Configured
+admission, runtime-reported KV capacity, and exercised input length are kept
+separate throughout this repository.
 
 ## Documentation
 
@@ -183,9 +215,10 @@ DSpark-3/393,216-token artifact; it is not the final production shape. See
 ## Claim boundary
 
 Direct validation covers this checkpoint, this single 96 GB GPU, full and
-piecewise CUDA graphs, the frozen reasoning/tool suites, and one 994,987-token
-request. It does not establish the exact 1,048,576-token setting,
-one-million-token concurrency, tensor parallelism, sustained soak or reload,
+piecewise CUDA graphs, the bounded profile measurements above, the historical
+frozen reasoning/tool suites, and one historical 994,987-token request. The
+frozen suites were not rerun for the new 300K/512K profiles. Validation does
+not establish 512K concurrency, tensor parallelism, sustained soak or reload,
 another GPU or checkpoint, or DSpark-4 support inside the historical v4 OCI
 container.
 

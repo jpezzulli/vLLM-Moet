@@ -526,10 +526,10 @@ index 0000000000..9901d1c96c
 +        abort.assert_called_once_with(40)
 diff --git a/tests/model_executor/layers/test_moe_w2_persistence.py b/tests/model_executor/layers/test_moe_w2_persistence.py
 new file mode 100644
-index 0000000000..1a57505765
+index 0000000000..b5603d9761
 --- /dev/null
 +++ b/tests/model_executor/layers/test_moe_w2_persistence.py
-@@ -0,0 +1,688 @@
+@@ -0,0 +1,714 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +
@@ -653,6 +653,32 @@ index 0000000000..1a57505765
 +    assert moe_w2_planes_cache._ckpt_id() == "checkpoint-a"
 +    moe_w2_planes_cache.shutdown()
 +    assert moe_w2_planes_cache._ckpt_id() == "checkpoint-b"
++
++
++def test_delta_layer_exclusions_gate_shared_fp4_tier(monkeypatch):
++    sentinel = object()
++    get_tier = mock.Mock(return_value=sentinel)
++    monkeypatch.setattr(moe_w2_delta, "_EXCLUDE_LAYERS", frozenset({43, 44, 45}))
++    monkeypatch.setattr(moe_w2_delta, "enabled", lambda: True)
++    monkeypatch.setattr(moe_w2_delta, "base_enabled", lambda: False)
++    monkeypatch.setattr(moe_w2_delta, "split_enabled", lambda: False)
++    monkeypatch.setattr(moe_w2_delta, "get_tier", get_tier)
++
++    assert moe_w2_delta.layer_enabled(42)
++    assert not moe_w2_delta.layer_enabled(43)
++    assert moe_w2_cubit._fp4_tier_for_build(43, 256, "cuda", 64, 32) is None
++    get_tier.assert_not_called()
++
++    assert (
++        moe_w2_cubit._fp4_tier_for_build(42, 256, "cuda", 64, 32)
++        is sentinel
++    )
++    get_tier.assert_called_once_with(
++        n_experts=256,
++        dev="cuda",
++        w13_bytes=32,
++        w2_bytes=16,
++    )
 +
 +
 +def test_invalid_zero_mode_fails_at_startup(pack_env, monkeypatch):
@@ -9609,10 +9635,10 @@ index 0000000000..d26ce2cf4d
 +        "on" if _verify() else "off")
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
 new file mode 100644
-index 0000000000..5a0df78f72
+index 0000000000..17991c9741
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_cubit.py
-@@ -0,0 +1,3992 @@
+@@ -0,0 +1,3998 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""Routed experts on 2-bit tensor-sym planes (cubit moe_w2) for the
@@ -10200,7 +10226,9 @@ index 0000000000..5a0df78f72
 +            f"{missing} (dir {_DIR}; set VLLM_MOE_W2_CUBIT_DIR)")
 +
 +
-+def _fp4_tier_for_build(E: int, dev, n13k13: int, n2k2: int):
++def _fp4_tier_for_build(
++    layer_key: int, E: int, dev, n13k13: int, n2k2: int
++):
 +    """FP4 delta tier sized for this model's PER-RANK shapes (n13k13 =
 +    N13*K13, n2k2 = N2*K2 elements). Over the base cache the FP4 slots must
 +    carry their OWN block-32 scale sections ([fp4_13|sc13|fp4_2|sc2]) — the
@@ -10211,6 +10239,8 @@ index 0000000000..5a0df78f72
 +    over the base cache — the quintal kernel reads class/sign/scales from
 +    the base slot the refinement is residency-coupled to."""
 +    from vllm.model_executor.layers.quantization.utils import moe_w2_delta
++    if not moe_w2_delta.layer_enabled(layer_key):
++        return None
 +    split = moe_w2_delta.split_enabled()
 +    sc13, sc2 = ((n13k13 // 32, n2k2 // 32)
 +                 if moe_w2_delta.base_enabled() and not split else (0, 0))
@@ -10500,7 +10530,7 @@ index 0000000000..5a0df78f72
 +        direct = (
 +            allow_direct_delta
 +            and os.getenv("VLLM_MOE_W2_FAST_LOAD", "0") == "1"
-+            and moe_w2_delta.enabled()
++            and moe_w2_delta.layer_enabled(key)
 +            and not moe_w2_delta.split_enabled()
 +        )
 +        if direct:
@@ -10527,7 +10557,7 @@ index 0000000000..5a0df78f72
 +                    workers, batch_layers)
 +            _fast_loader.add_layer(key, files, base_sizes)
 +            layer._moe_w2_direct_cache = True
-+        elif moe_w2_delta.enabled():
++        elif moe_w2_delta.layer_enabled(key):
 +            # Preserve the original serial cache path for configurations that
 +            # keep FP4 parts alongside the base planes.
 +            full_sizes = _pc.expected_sizes(
@@ -10714,7 +10744,7 @@ index 0000000000..5a0df78f72
 +        w13_bytes=c13len + s13len, w2_bytes=c2len + s2len)
 +    if layer_key not in btier._store:
 +        return False
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(layer_key, E, dev, N13 * K13, N2 * K2)
 +    if tier is not None and layer_key not in tier._store:
 +        return False
 +    from vllm.model_executor.layers.quantization.utils import (
@@ -11144,7 +11174,7 @@ index 0000000000..5a0df78f72
 +    # Pass the PER-RANK FP4 plane sizes (N*K//2 bytes/expert) so the delta tier's
 +    # slots, host store, and pool indexing match the (TP-sharded) planes. On TP1
 +    # these equal the module constants -> the single-GPU path is unchanged.
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(layer_key, E, dev, N13 * K13, N2 * K2)
 +    fp13 = fp2 = None
 +    if tier is not None:
 +        # full nibble planes (w4) or quintal planes (w4q, split)
@@ -11254,7 +11284,7 @@ index 0000000000..5a0df78f72
 +    planes2 = torch.empty(E, N2 * K2 // 4, dtype=torch.uint8, device=dev)
 +    sc2 = torch.empty(E, N2 * K2 // 32, dtype=torch.uint8, device=dev)
 +
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(layer_key, E, dev, N13 * K13, N2 * K2)
 +    fp13 = fp2 = None
 +    if tier is not None:
 +        # full nibble planes (w4) or quintal planes (w4q, split)
@@ -11313,7 +11343,7 @@ index 0000000000..5a0df78f72
 +    lidx = planes_cache.layer_idx_from_name(getattr(layer, "layer_name", ""))
 +    if not planes_cache.enabled() or lidx is None:
 +        return False
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(layer_key, E, dev, N13 * K13, N2 * K2)
 +    direct = getattr(layer, "_moe_w2_direct_cache", False)
 +    if direct:
 +        if _fast_loader is None:
@@ -11460,7 +11490,7 @@ index 0000000000..5a0df78f72
 +    from vllm.model_executor.layers.quantization.utils import (
 +        moe_w2_planes_cache as planes_cache)
 +    lidx = planes_cache.layer_idx_from_name(getattr(layer, "layer_name", ""))
-+    tier = _fp4_tier_for_build(E, dev, N13 * K13, N2 * K2)
++    tier = _fp4_tier_for_build(layer_key, E, dev, N13 * K13, N2 * K2)
 +
 +    planes13 = torch.empty(E, N13 * K13 // 4, dtype=torch.uint8, device=dev)
 +    sc13 = torch.empty(E, N13 * K13 // 32, dtype=torch.uint8, device=dev)
@@ -13184,7 +13214,8 @@ index 0000000000..5a0df78f72
 +        # (delta tier over the base cache, gate-filled) coexists on the
 +        # decode path: FP4-resident pairs divert to the w4 tier.
 +        btier = moe_w2_delta._BASE_TIER
-+        tier = moe_w2_delta._TIER        # FP4 need-pool (None unless opted in)
++        tier = (moe_w2_delta._TIER
++                if moe_w2_delta.layer_enabled(layer_key) else None)
 +        use_pf4 = (_PREFILL_FP4 and prefill and tier is not None
 +                   and tier.n_slots > 0)
 +        if torch.cuda.is_current_stream_capturing():
@@ -13330,7 +13361,8 @@ index 0000000000..5a0df78f72
 +        if not use_fp4 and not use_pf4:
 +            tier = None      # downstream w4 launches key off `tier`
 +    else:
-+        tier = moe_w2_delta._TIER       # peek only; created by the plane builder
++        tier = (moe_w2_delta._TIER
++                if moe_w2_delta.layer_enabled(layer_key) else None)
 +        # prefill consumes the FP4 tier too (quality lever, see _PREFILL_FP4)
 +        use_pf4 = (_PREFILL_FP4 and prefill and tier is not None
 +                   and tier.n_slots > 0)
@@ -13607,10 +13639,10 @@ index 0000000000..5a0df78f72
 +    ready.cache_clear()
 diff --git a/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py b/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py
 new file mode 100644
-index 0000000000..b78d651423
+index 0000000000..abb10d18c0
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/utils/moe_w2_delta.py
-@@ -0,0 +1,2511 @@
+@@ -0,0 +1,2536 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +"""FP4 delta tier for the 1-GPU 2-bit MoE path (quality restoration).
@@ -13660,6 +13692,26 @@ index 0000000000..b78d651423
 +_GB_RAW = os.getenv("VLLM_MOE_W2_DELTA_GB", "2.0").strip().lower()
 +_AUTO = _GB_RAW in ("auto", "-1", "-1.0")
 +_GB = 0.0 if _AUTO else float(_GB_RAW)
++# Optional layer-level exclusion for mixed target/draft stacks. Excluded
++# layers retain their W2 base path but never stage into or dispatch through
++# the shared FP4 correction tier.
++_EXCLUDE_LAYERS_RAW = os.getenv(
++    "VLLM_MOE_W2_DELTA_EXCLUDE_LAYERS", "").strip()
++try:
++    _EXCLUDE_LAYERS = frozenset(
++        int(item.strip())
++        for item in _EXCLUDE_LAYERS_RAW.split(",")
++        if item.strip()
++    )
++except ValueError as exc:
++    raise ValueError(
++        "VLLM_MOE_W2_DELTA_EXCLUDE_LAYERS must be a comma-separated "
++        "list of non-negative integers"
++    ) from exc
++if any(layer < 0 for layer in _EXCLUDE_LAYERS):
++    raise ValueError(
++        "VLLM_MOE_W2_DELTA_EXCLUDE_LAYERS cannot contain negative layers"
++    )
 +# Auto-mode knobs: VRAM to leave free for capture/workspaces, and an optional
 +# cap on the auto-sized pool (0 = uncapped).
 +_RESERVE_GB = float(os.getenv("VLLM_MOE_W2_DELTA_RESERVE_GB", "3.0"))
@@ -15814,6 +15866,11 @@ index 0000000000..b78d651423
 +        # after-KV sizing belongs to the base pool math, not this tier).
 +        return _GB_EXPLICIT and _GB > 0
 +    return _GB > 0 or _AUTO
++
++
++def layer_enabled(layer_key: int) -> bool:
++    """Whether ``layer_key`` may use the shared FP4 correction tier."""
++    return enabled() and layer_key not in _EXCLUDE_LAYERS
 +
 +
 +def base_enabled() -> bool:

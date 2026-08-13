@@ -3,19 +3,19 @@
 ## Memory placement
 
 DeepSeek-V4-Flash-0731 has target-model MoE W2 layers followed by three W2
-layers used by its DSpark draft model. The validated layout is:
+layers used by its DSpark draft model. The current capacity layout is:
 
 | Layer keys | Placement | Role |
 |---|---|---|
-| 0–37 | GPU VRAM | target-model W2 |
-| 38–42 | NUMA-local pinned host RAM | target-model W2 read over PCIe |
-| 43–45 | GPU VRAM | DSpark W2 |
+| 0–41 | GPU VRAM | target-model W2 |
+| 42 | NUMA-local pinned host RAM | target-model W2 read over PCIe |
+| 43–45 | NUMA-local pinned host RAM | DSpark W2 read over PCIe |
 
-Each selected target layer occupies exactly 1,811,939,328 bytes (1.6875 GiB),
-so five mapped layers place 9,059,696,640 bytes (8.4375 GiB) outside VRAM.
-The DSpark layers remain resident because speculative decoding repeatedly
-uses them and because the validated recipe does not implement host-backed
-draft W2.
+Each selected complete layer occupies exactly 1,811,939,328 bytes
+(1.6875 GiB), so four mapped layers place 7,247,757,312 bytes (6.75 GiB)
+outside VRAM. The performance sibling maps only DSpark layers 43–45, placing
+5,435,817,984 bytes (5.0625 GiB) outside VRAM while keeping every target W2
+layer resident.
 
 ## Canonical construction, not offload replay
 
@@ -46,8 +46,8 @@ than an implicit choice of node 0.
 After allocation, page placement is verified through Linux page-location
 interfaces. The JSON audit records configured layers, byte geometry, device
 and host pointers, page-node counts, UVA equality, kernel dispatch state, and
-redundant GPU W2 bytes. The validated five-layer audit reports zero redundant
-complete GPU bytes.
+redundant GPU W2 bytes. The exercised three- and four-layer audits report zero
+redundant complete GPU bytes.
 
 ## CUDA graph lifetime
 
@@ -68,16 +68,17 @@ The final serving shape retains a fixed FP4 correction tier of 512 slots at
 tier while the compact W2 base remains the default execution representation.
 FP8 MLA KV receives the remaining vLLM budget.
 
-At `gpu_memory_utilization=0.974`, the final startup reported 4.96 GiB of KV
-allocation and capacity for 1,058,256 tokens. The admission limit is
-1,000,000. Allocation capacity and configured admission are distinct from the
-994,987-token request that was actually exercised.
+The 300K performance profile uses `gpu_memory_utilization=0.974` and reported
+capacity for 378,490 KV tokens. The 512K capacity profile uses
+`gpu_memory_utilization=0.98446` and reported capacity for 901,924 KV tokens.
+Their configured admission limits are 300,000 and 524,288 respectively.
+Allocation capacity and configured admission are distinct from the exact
+250,000- and 500,000-token inputs actually exercised.
 
 ## Tradeoff
 
 Direct PCIe reads reduce VRAM residency at the cost of decode throughput and
-substantial PCIe traffic. On the representative DSpark-4 suites, PCIe RX
-peaked near 30 GiB/s and model generation averaged about 56.49 tok/s. This is
-an intentional capacity-for-throughput trade: the goal is a coherent,
-agent-capable 159B model with exceptional single-request context on one 96 GB
-GPU, not maximum short-context tokens per second.
+substantial PCIe traffic. The bounded 300K profile reached 89.82 tok/s for one
+exact 1,024-token decode and 152.31 tok/s aggregate for four; the 512K profile
+measured 68.23 and 126.83 tok/s respectively. This is an intentional
+capacity-for-throughput trade, not a claim that every prompt has those rates.

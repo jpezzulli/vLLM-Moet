@@ -1,20 +1,20 @@
-id: deepseek-v4-flash/pro6000x1-mapped-w2-dspark4
+id: deepseek-v4-flash/pro6000x1-mapped-w2-dspark4-300k
 model: DeepSeek-V4-Flash-0731
 served_name: pennyroyal
-summary: "1x RTX PRO 6000 - mapped W2 layer 42 plus DSpark 43-45, DSpark-4, 6 GiB target FP4, 512K admission"
+summary: "1x RTX PRO 6000 - mapped DSpark W2 layers 43-45, DSpark-4, 6 GiB target FP4, 300K admission"
 
 requires:
   gpus: 1
   vram_gb: 96
   host_ram_gb: 192
 
-context: 524288
+context: 300000
 load_timeout_s: 2400
 
-# Native runtime requirement: patch/SOURCE.txt. Hardware exercised on one RTX
-# PRO 6000 with 901,924 runtime-reported KV tokens and an exact 500,000-token
-# uncached prefill. Topology is derived from the active CUDA device. Optional
-# PCI/NUMA guards are documented in BUILD-AND-RUN.md and HOW-IT-WORKS.md.
+# Performance-oriented sibling of pro6000x1-mapped-w2-dspark4. Hardware
+# exercised with 378,490 runtime-reported KV tokens and an exact 250,000-token
+# uncached prefill. All target W2 layers remain GPU-resident; the mapped DSpark
+# layers are excluded from the target-only FP4 correction pool.
 env:
   VLLM_USE_V2_MODEL_RUNNER: "1"
   VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
@@ -31,16 +31,16 @@ env:
   VLLM_MOE_W2_GATE: "0"
   VLLM_MOE_W2_AFRAG: "1"
   VLLM_MOE_W2_FUSED_UNPERMUTE: "0"
-  VLLM_MOE_W2_MAPPED_LAYERS: "42,43,44,45"
+  VLLM_MOE_W2_MAPPED_LAYERS: "43,44,45"
 
 serve_args:
   - --host 0.0.0.0
   - --tensor-parallel-size 1
-  - --max-model-len 524288
+  - --max-model-len 300000
   - --max-num-seqs 4
   - --kv-cache-dtype fp8
   - --block-size 256
-  - --gpu-memory-utilization 0.98446
+  - --gpu-memory-utilization 0.974
   - --max-num-batched-tokens 2048
   - --enable-prefix-caching
   - --trust-remote-code

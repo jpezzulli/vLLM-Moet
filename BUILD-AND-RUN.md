@@ -11,14 +11,13 @@ repository's generated publication patch.
 - one NVIDIA RTX PRO 6000 Blackwell Workstation Edition (SM120), 96 GB
 - GPU-local NUMA topology visible through PCI sysfs
 - CUDA mapped-host memory and UVA
-- at least 192 GiB host RAM and a memlock limit sufficient for 9,059,696,640
+- at least 192 GiB host RAM and a memlock limit sufficient for 7,247,757,312
   mapped W2 bytes plus normal runtime allocations
 - CUDA toolkit 13.3, GCC/G++ 15, CMake 3.26.1 or newer, Ninja, `uv`, Git,
   `curl`, and the Hugging Face `hf` CLI when downloading the checkpoint
 
 The validated software pins are listed in [PROVENANCE.md](PROVENANCE.md).
-The important runtime source is
-`jpezzulli/vllm@e89479ec2c911b2864ed61df4b83668686d75b67`.
+The exact runtime source is recorded in `patch/SOURCE.txt`.
 
 The validated core environment used Python 3.14, PyTorch 2.11.0+cu130,
 TorchVision 0.26.0+cu130, TorchAudio 2.11.0+cu130, FlashInfer 0.6.14,
@@ -97,10 +96,11 @@ Useful path overrides are:
 | `CACHE_ROOT` | `/srv/cache/vllm-moet` |
 | `W2_AUDIT_PATH` | `/tmp/pennyroyal-mapped-w2-audit.json` |
 
-The serving geometry is intentionally fixed in the launcher: mapped layers
-38–42, GPU DSpark layers 43–45, DSpark-4, 6 GiB FP4 correction, FP8 MLA KV,
-four sequences, 2,048 batched tokens, `gpu_memory_utilization=0.974`, and a
-1,000,000-token admission limit.
+The serving geometry is intentionally fixed in the launcher: mapped target
+layer 42 and mapped DSpark layers 43–45, DSpark-4, a target-only 6 GiB FP4
+correction tier, FP8 MLA KV, four sequences, 2,048 batched tokens,
+`gpu_memory_utilization=0.98446`, and a 524,288-token admission limit. The
+runtime reported capacity for 901,924 KV tokens.
 
 The runtime automatically resolves the selected visible GPU's PCI BDF and
 local NUMA node. Use `VLLM_MOE_W2_MAPPED_NUMA_NODE` only as an explicit guard
@@ -127,10 +127,11 @@ Wait for model loading, KV initialization, DeepGEMM warm-up, and every full,
 piecewise, and DSpark graph capture to finish. Startup must report:
 
 - Runner V2 and DSpark-4;
-- target W2 layers 38–42 mapped and layers 43–45 GPU-resident;
+- target W2 layer 42 and DSpark W2 layers 43–45 mapped;
+- target W2 layers 0–41 GPU-resident;
 - 512 correction slots × 12 MiB = 6 GiB;
-- FP8 MLA KV and a 1,000,000-token admission limit;
-- 9,059,696,640 mapped bytes and zero redundant complete GPU W2 bytes.
+- FP8 MLA KV and a 524,288-token admission limit;
+- 7,247,757,312 mapped bytes and zero redundant complete GPU W2 bytes.
 
 Then run:
 

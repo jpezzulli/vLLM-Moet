@@ -244,14 +244,17 @@ the referenced base/delta pack builders or compatible DeepSeek-V4-Flash pack
 artifacts. The existing 2-bit planes and 12 MiB FP4 correction packs are not
 interchangeable with those EXL3 inputs.
 
-The reconciliation was therefore validated with the existing production
-geometry unchanged. It completed all graph captures, reported 1,058,042 KV
-tokens, placed layers 38–42 in 9,059,696,640 bytes of NUMA-local mapped host
-memory with zero redundant complete GPU W2 bytes, and passed bounded arithmetic
-and exact tool-call smoke requests. This maintenance smoke does not replace
-the frozen quality or long-context results above. EXL3 activation requires a
-separate candidate and proportional qualification after the pack tooling is
-available.
+That earlier EXL3 source-reconciliation smoke deliberately retained the
+then-current five-target-layer geometry: mapped layers 38–42,
+9,059,696,640 bytes of NUMA-local host memory, and 1,058,042
+runtime-reported KV tokens. It completed all graph captures with zero
+redundant complete GPU W2 bytes and passed bounded arithmetic and exact
+tool-call smoke requests. Those figures are historical and are **not** the
+current serving recipe. The current 512K capacity profile maps target layer 42
+plus DSpark layers 43–45 and reports 901,924 KV tokens, as documented above.
+The reconciliation smoke does not replace the frozen quality or long-context
+results. EXL3 activation requires a separate candidate and proportional
+qualification after the pack tooling is available.
 
 ## Repository map
 

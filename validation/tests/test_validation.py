@@ -59,6 +59,11 @@ class ReasoningSuiteTests(unittest.TestCase):
         self.assertEqual(len(reasoning_cases.CASES), 8)
         self.assertEqual(len(reasoning_runner.measured_plan(reasoning_cases)), 9)
 
+    def test_measured_requests_have_no_output_token_cap(self):
+        payload = reasoning_runner.measured_payload("pennyroyal", [])
+        self.assertNotIn("max_tokens", payload)
+        self.assertNotIn("max_completion_tokens", payload)
+
     def test_historical_grade_reproduces_published_score(self):
         result = self.score()
         self.assertEqual(result["final_score"], 97.07)

@@ -27,8 +27,8 @@ fail() {
 
 locked_kib="$(ulimit -l)"
 if [[ "${locked_kib}" != "unlimited" ]] && \
-   (( locked_kib < 9000000 )); then
-  fail "memlock limit ${locked_kib} KiB is too small for five mapped W2 layers"
+   (( locked_kib < 7500000 )); then
+  fail "memlock limit ${locked_kib} KiB is too small for four mapped W2 layers"
 fi
 
 mkdir -p "${MOET_STORE_DIR}" "${MOET_PLANES_CACHE_DIR}" \
@@ -63,6 +63,7 @@ unset VLLM_MOE_W2_MTP_LAYERS
 export VLLM_MOE_W2_FORCE_RESIDENT=1
 export VLLM_MOE_W2_DELTA_GB=6
 export VLLM_MOE_W2_DELTA_RESERVE_GB=0
+export VLLM_MOE_W2_DELTA_EXCLUDE_LAYERS=43,44,45
 export VLLM_MOE_W2_DRAFT=1
 export VLLM_MOE_W2_NUM_LAYERS=46
 export VLLM_MOE_W2_DELTA_POLICY=freq
@@ -75,7 +76,7 @@ export VLLM_MOE_W2_PLANES_CACHE="${MOET_PLANES_CACHE_DIR}"
 export VLLM_MOE_W2_FAST_LOAD=1
 export VLLM_MOE_W2_FAST_LOAD_WORKERS=4
 export VLLM_MOE_W2_FAST_LOAD_BATCH_LAYERS=12
-export VLLM_MOE_W2_MAPPED_LAYERS=38,39,40,41,42
+export VLLM_MOE_W2_MAPPED_LAYERS=42,43,44,45
 export VLLM_MOE_W2_MAPPED_AUDIT_PATH="${W2_AUDIT_PATH}"
 
 exec "${VLLM_PYTHON}" -m vllm.entrypoints.cli.main serve \
@@ -84,11 +85,11 @@ exec "${VLLM_PYTHON}" -m vllm.entrypoints.cli.main serve \
   --host 0.0.0.0 \
   --port "${PORT}" \
   --tensor-parallel-size 1 \
-  --max-model-len 1000000 \
+  --max-model-len 524288 \
   --max-num-seqs 4 \
   --kv-cache-dtype fp8 \
   --block-size 256 \
-  --gpu-memory-utilization 0.974 \
+  --gpu-memory-utilization 0.98446 \
   --max-num-batched-tokens 2048 \
   --enable-prefix-caching \
   --trust-remote-code \

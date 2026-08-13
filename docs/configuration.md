@@ -1,15 +1,15 @@
 # Mapped-host configuration
 
-> **Historical configuration snapshot:** the settings below describe the
-> earlier three-layer DSpark-3/393,216-token candidate. Use
-> [BUILD-AND-RUN.md](../BUILD-AND-RUN.md) for the validated five-layer
-> DSpark-4/1,000,000-token production recipe.
+> **Current configuration:** the preferred launcher is the four-mapped-layer
+> DSpark-4/524,288-token capacity profile. A three-mapped-layer 300,000-token
+> performance sibling is also published.
 
 ## Mapped W2 options
 
 | Option | Default | Meaning and constraints |
 |---|---|---|
-| `VLLM_MOE_W2_MAPPED_LAYERS` | empty | Comma-separated non-negative MoET layer keys. Empty disables mapped W2. Duplicate, negative, or empty entries fail. The validated recipe uses `40,41,42`. |
+| `VLLM_MOE_W2_MAPPED_LAYERS` | empty | Comma-separated non-negative MoET layer keys. Empty disables mapped W2. Duplicate, negative, or empty entries fail. The capacity recipe uses `42,43,44,45`; the performance recipe uses `43,44,45`. |
+| `VLLM_MOE_W2_DELTA_EXCLUDE_LAYERS` | empty | Comma-separated non-negative layer keys excluded from the shared FP4 correction tier. Both current recipes exclude DSpark layers `43,44,45`, keeping the 6 GiB pool target-only. Invalid syntax fails closed. |
 | `VLLM_MOE_W2_MAPPED_NUMA_NODE` | auto | Optional non-negative node guard. The active GPU's node is always derived from sysfs; a mismatch fails. The validated host resolved node 0. |
 | `VLLM_MOE_W2_MAPPED_PCI` | auto | Optional active-GPU BDF guard, such as `0000:31:00.0`. A mismatch fails. It does not select a GPU. |
 | `VLLM_MOE_W2_MAPPED_AUDIT_PATH` | unset | Optional JSON audit output. Its parent is created and the file is atomically replaced as state changes. |
@@ -20,7 +20,7 @@ sysfs NUMA locality. They cannot be combined with
 `VLLM_MOE_W2_BASE_CACHE_GB`. Only complete canonical layers are supported;
 there is no partial-tensor selector.
 
-## Validated serving shape
+## Current serving shape
 
 | Setting | Value | Tradeoff or constraint |
 |---|---:|---|
@@ -31,33 +31,33 @@ there is no partial-tensor selector.
 | `VLLM_MOE_W2_FORCE_RESIDENT` | `1` | User consent to continue past the existing conservative resident estimate; a real shortfall can still OOM. |
 | `VLLM_MOE_W2_DELTA_GB` | `6` | Exactly 512 FP4 correction slots at 12 MiB/slot for this model. This tier is outside vLLM's utilization budget. |
 | `VLLM_MOE_W2_DELTA_RESERVE_GB` | `0` | Prevents the automatic 3 GiB post-KV reserve from reducing the fixed tier. |
-| `VLLM_MOE_W2_MTP_LAYERS` | `3` | Keeps the model-declared DSpark-3 layer set. |
+| `VLLM_MOE_W2_NUM_LAYERS` | `46` | Covers target and DSpark W2 layer keys 0–45. |
 | `VLLM_MOE_W2_DELTA_POLICY` | `freq` | Existing FP4 slot policy. |
 | `VLLM_MOE_W2_PREFILL_FP4` | `1` | Existing FP4 prefill behavior used by the sealed run. |
 | `VLLM_MOE_W2_GATE` | `0` | Confidence-gate replay disabled in the validated candidate. |
 | `VLLM_MOE_W2_AFRAG` | `1` | Existing fragment-major prefill path enabled. |
 | `VLLM_MOE_W2_FUSED_UNPERMUTE` | `0` | Keeps the validated legacy reduction path. |
-| `--gpu-memory-utilization` | `0.988` | vLLM model/KV budget. Mapped W2 and MoET FP4 allocations are external to it. |
-| `--max-model-len` | `393216` | Configured admission limit only; 393,216 tokens were not exercised. |
+| `--gpu-memory-utilization` | `0.98446` | Capacity profile. The 300K sibling uses `0.974`. Mapped W2 and MoET FP4 allocations are external to this budget. |
+| `--max-model-len` | `524288` | Capacity-profile admission. The 300K sibling uses `300000`; exact 500,000- and 250,000-token inputs were exercised. |
 | `--kv-cache-dtype` | `fp8` | Validated MLA KV type. |
 | `--block-size` | `256` | Validated KV block shape. |
 | `--max-num-batched-tokens` | `2048` | Validated profile/prefill chunk shape. |
 | `--max-num-seqs` | `4` | Configured scheduler concurrency; the bounded decode result was single-request. |
-| `--default-chat-template-kwargs` | thinking enabled, `reasoning_effort=max` | Production quality setting. The separately preserved frozen baseline used `high`. |
+| `--default-chat-template-kwargs` | thinking enabled, `reasoning_effort=high` | Daily serving setting. Historical qualification also records a separate `max` run. |
 | `--override-generation-config` | `{"top_p":0.95}` | Production quality setting. The separately preserved frozen baseline used the checkpoint default `top_p=1.0`. |
-| `--speculative-config` | DSpark, 3 tokens, greedy draft | Validated speculative depth and draft method. |
+| `--speculative-config` | DSpark, 4 tokens, greedy draft | Current speculative depth and draft method. |
 | `--compilation-config` | full and piecewise graphs, all custom ops | Eager mode is not the supported candidate. |
 
-The fixed recipe is
-`bench/recipes/deepseek-v4-flash/pro6000x1-mapped-w2-dspark3.yaml`. Do not
-infer a safe slot count, context, or utilization value for another checkpoint
-or GPU from this one result.
+The capacity recipe is
+`bench/recipes/deepseek-v4-flash/pro6000x1-mapped-w2-dspark4.yaml`; its 300K
+sibling ends in `-300k.yaml`. Do not infer a safe slot count, context, or
+utilization value for another checkpoint or GPU from these results.
 
 ## Memory interpretation
 
-The validated three-layer mapping moved 5.0625 GiB of complete W2 base storage
-to host RAM. The runtime still needed the dense model, 40 target W2 layers,
-three GPU-resident DSpark layers, graph workspaces, KV, and the 6 GiB FP4 tier
-on the GPU. After graph capture, `nvidia-smi` reported 1,057 MiB physically
-free. vLLM reported capacity for 625,757 KV tokens, but that is allocation
-capacity rather than an exercised request length.
+The 300K profile maps 5,435,817,984 bytes and reported 378,490 KV tokens. The
+512K profile maps 7,247,757,312 bytes and reported 901,924 KV tokens. During
+the 512K first-use/JIT and four-way decode probes, direct physical-free samples
+fell to 9 MiB and 87 MiB respectively without an OOM. Those narrow margins are
+part of the measured geometry, not hidden reserve. Runtime KV capacity remains
+an allocation figure rather than an exercised request length.

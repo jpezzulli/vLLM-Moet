@@ -46,8 +46,8 @@ match = next((model for model in models if model.get("id") == expected), None)
 if match is None:
     raise SystemExit(f"served model {expected!r} not found")
 limit = match.get("max_model_len")
-if limit != 1_000_000:
-    raise SystemExit(f"expected max_model_len 1000000, got {limit!r}")
+if limit != 524_288:
+    raise SystemExit(f"expected max_model_len 524288, got {limit!r}")
 print(f"models: {expected}, max_model_len={limit}")
 PY
 
@@ -57,10 +57,10 @@ import json
 import sys
 
 audit = json.load(open(sys.argv[1], encoding="utf-8"))
-expected_layers = [38, 39, 40, 41, 42]
+expected_layers = [42, 43, 44, 45]
 if audit.get("configured_layers") != expected_layers:
     raise SystemExit(f"unexpected mapped layers: {audit.get('configured_layers')!r}")
-if audit.get("total_allocation_bytes") != 9_059_696_640:
+if audit.get("total_allocation_bytes") != 7_247_757_312:
     raise SystemExit(f"unexpected mapped bytes: {audit.get('total_allocation_bytes')!r}")
 if audit.get("redundant_gpu_w2_bytes") != 0:
     raise SystemExit("audit reports redundant complete GPU W2 bytes")
@@ -69,7 +69,7 @@ for layer in audit.get("layers") or []:
         raise SystemExit(f"incomplete/UVA-invalid mapped layer: {layer.get('layer_key')}")
     if layer.get("numa_node") is None or not layer.get("page_nodes"):
         raise SystemExit(f"missing NUMA placement evidence: {layer.get('layer_key')}")
-print("mapped audit: layers 38-42, 9059696640 bytes, zero redundant GPU W2")
+print("mapped audit: layers 42-45, 7247757312 bytes, zero redundant GPU W2")
 PY
 
 python3 - "${SERVED_MODEL_NAME}" > "${tmp_dir}/request.json" <<'PY'

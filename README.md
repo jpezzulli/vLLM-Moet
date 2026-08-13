@@ -67,6 +67,14 @@ target W2 layers in VRAM and maps DSpark layers 43–45. The 512K profile also
 maps complete target layer 42; target layer 42 remains eligible for FP4
 correction, while DSpark layers 43–45 remain excluded.
 
+In plain English, DSpark no longer participates in FP4 frequency selection.
+Its three draft layers neither consume correction slots nor compete with the
+target model for them. The frequency policy ranks target-model experts only,
+so all **512 correction slots / 6 GiB** are reserved for improving the main
+model's W2 weights. DSpark continues to use its mapped 2-bit base layers for
+drafting; accepted draft tokens are still verified by the corrected target
+model.
+
 Each selected complete W2 layer is constructed directly in pinned, GPU-local
 host memory:
 

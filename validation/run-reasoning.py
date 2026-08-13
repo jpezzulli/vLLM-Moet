@@ -241,6 +241,16 @@ def messages(system, prompt):
     return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
 
 
+def measured_payload(model, request_messages):
+    """Build a measured request without a harness-imposed output-token cap."""
+    return {
+        "model": model,
+        "messages": request_messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+
+
 def measured_plan(suite):
     plan = []
     for case in suite.CASES:
@@ -302,7 +312,8 @@ def main():
             "warmups": 2,
             "measured_requests": plan,
             "request_parameters": {
-                "max_tokens": 32768,
+                "max_tokens": None,
+                "max_tokens_field": "omitted",
                 "stream": True,
                 "stream_options": {"include_usage": True},
                 "sampling_overrides": [],
@@ -376,13 +387,9 @@ def main():
 
     for case in suite.CASES:
         request_id = f"{case['id'].lower()}-r1"
-        payload = {
-            "model": args.model,
-            "messages": messages(suite.SYSTEM, case["prompt"]),
-            "max_tokens": 32768,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
+        payload = measured_payload(
+            args.model, messages(suite.SYSTEM, case["prompt"])
+        )
         print(f"START {request_id} {case['title']}", flush=True)
         result = stream_chat(
             args.base, payload, raw_dir, request_id, tokenizer, heat_sentinel
@@ -411,13 +418,7 @@ def main():
             assistant,
             {"role": "user", "content": case["correction"]},
         ])
-        correction_payload = {
-            "model": args.model,
-            "messages": correction_messages,
-            "max_tokens": 32768,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
+        correction_payload = measured_payload(args.model, correction_messages)
         print(f"START {correction_id}", flush=True)
         corrected = stream_chat(
             args.base, correction_payload, raw_dir, correction_id,
@@ -445,6 +446,8 @@ def main():
         "suite_source": str(args.suite),
         "warmups": 2,
         "measured_requests": 9,
+        "measured_max_tokens": None,
+        "measured_max_tokens_field": "omitted",
         "request_plan": plan,
         "results": "results.jsonl",
         "grading": "blinded qualitative review required; see cases/reasoning-rubric.json",

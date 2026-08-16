@@ -467,14 +467,14 @@ SEALED_CONTROLS = {
     "natural-decode": {
         "id": "sealed_natural_decode_v2",
         "prompt": (
-            "Produce a deterministic plain-text scheduler operations catalog. "
-            "Begin immediately with entry 0001 and continue sequentially through "
-            "at least entry 0600 without skipping or ending early. Every entry must "
-            "be one line using exactly this shape, with only the four-digit number "
-            "changing: '0001 | scheduler-state | lease-renewal | retry-budget | "
-            "audit-checkpoint'. Do not add headings, commentary, summaries, code "
-            "fences, or a closing sentence. Continue the numbered catalog until the "
-            "response limit interrupts it."
+            "Write a self-contained engineering field manual for operating a reliable "
+            "distributed job scheduler. Develop at least 3,500 useful output tokens "
+            "before concluding. Cover requirements, state transitions, leases, "
+            "idempotency, retries, fairness, observability, capacity planning, "
+            "security, testing, deployment, incident response, and disaster recovery. "
+            "For every area, include concrete invariants, failure modes, observable "
+            "signals, operator actions, and validation steps. Avoid padding, repeated "
+            "passages, meta-commentary, tool calls, and a synthetic closing marker."
         ),
         "tools": [],
         "max_tokens": 3072,

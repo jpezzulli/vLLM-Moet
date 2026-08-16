@@ -116,8 +116,9 @@ Two opt-in controls live in the same runner without changing the frozen
 
 - `sealed_natural_decode_v2` is the replacement single-stream decode
   instrument. It uses greedy sampling, `reasoning_effort=low`, a 3,072-token
-  ceiling, no forced minimum, no `ignore_eos`, and a deliberately boring
-  numbered catalog prompt that should reach that ceiling naturally. The result
+  ceiling, no forced minimum, no `ignore_eos`, and a deterministic natural
+  engineering-prose prompt requesting more useful content than the ceiling so
+  it should reach that ceiling without a synthetic tail. The result
   records direct server-returned token IDs, a token-ID SHA-256 digest, and an
   independent canonical assistant-output SHA-256 digest.
 

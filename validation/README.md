@@ -110,16 +110,25 @@ Two opt-in controls live in the same runner without changing the frozen
   note, inspect the artifact, revise the reported defect, inspect again, and
   finish with the artifact identity and status. Its exact five-call sequence,
   facts, revision, final inspection, and natural stop are automatically gated.
-- `sealed_natural_decode_v1` requests a useful approximately 1,500-token
-  engineering field note and requires a natural stop, completion marker, at
-  least 1,000 completion tokens, and no tool calls.
+- `sealed_natural_decode_v2` is the replacement single-stream decode
+  instrument. It uses greedy sampling, `reasoning_effort=low`, a 3,072-token
+  ceiling, no forced minimum, no `ignore_eos`, and a deliberately boring
+  numbered catalog prompt that should reach that ceiling naturally. The result
+  records direct server-returned token IDs, a token-ID SHA-256 digest, and an
+  independent canonical assistant-output SHA-256 digest.
 
-Both use OpenAI `/v1/chat/completions`, `reasoning_effort=xhigh`, a natural
-32,768-token ceiling with no forced minimum, fixed seed 5101, deterministic
-local tools, Prometheus counter deltas, and optional system-journal capture.
-Each live invocation requires an early fixed-width cache partition key. Change
-only that same-length key between repetitions; this prevents cross-run prefix
-reuse without changing the task.
+Both use OpenAI `/v1/chat/completions`, fixed seed 5101, Prometheus counter
+deltas, and optional system-journal capture. The agentic control remains
+`reasoning_effort=xhigh` with its natural 32,768-token ceiling and
+deterministic local tools. Each live invocation requires a unique
+`cache_salt`; this isolates the prefix cache without altering the prompt.
+
+Decode v2 supersedes decode v1 from sealed commit
+`a557ee12a3ab833165d24b5bd15afb6667d85f81`. Decode v1's unconstrained
+content shape produced 3,801 to 9,366 completion tokens and materially
+different MTP acceptance, so it was not a stable performance instrument.
+The replacement changes benchmark geometry and evidence collection only; it
+introduces no runtime or serving optimization.
 
 Inspect either sealed definition without contacting a server:
 
@@ -150,8 +159,12 @@ The result records total, model, and local-tool wall time separately; model
 turns; tool calls; input/output usage; finish reason; effective request rate;
 engine decode rate when exposed; speculative draft/accepted tokens and
 acceptance rate; prefix-cache queries/hits; bounded journal metrics; and the
-resolved runner and CUDA graph mode from the current service journal. Use one
-unmeasured warm-up and separate output directories for measured repetitions.
+parsed journal engine-throughput samples, speculative counts, prefix-hit
+samples, and any compile/JIT/CUDA-graph activity observed around the request.
+The decode result also records direct token IDs in the raw response and
+matching stream digests in both result and manifest, plus the resolved runner
+and CUDA graph mode from the current service journal. Use one unmeasured
+warm-up and separate output directories for measured repetitions.
 Never commit live result directories.
 
 ## Opt-in near-million-token needle

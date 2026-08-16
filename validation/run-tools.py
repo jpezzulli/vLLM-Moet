@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -464,20 +465,23 @@ SEALED_CONTROLS = {
         "reasoning_effort": "xhigh",
     },
     "natural-decode": {
-        "id": "sealed_natural_decode_v1",
+        "id": "sealed_natural_decode_v2",
         "prompt": (
-            "Write a self-contained engineering field note about operating a "
-            "reliable distributed job scheduler. Cover requirements, state "
-            "transitions, leases, idempotency, retries, fairness, observability, "
-            "capacity planning, security, testing, incident response, and a concise "
-            "operator checklist. Use approximately 1,500 useful output tokens, avoid "
-            "padding or repetition, and conclude naturally with the exact final line "
-            "shown between quotes: 'END-OF-CONTROL'"
+            "Produce a deterministic plain-text scheduler operations catalog. "
+            "Begin immediately with entry 0001 and continue sequentially through "
+            "at least entry 0600 without skipping or ending early. Every entry must "
+            "be one line using exactly this shape, with only the four-digit number "
+            "changing: '0001 | scheduler-state | lease-renewal | retry-budget | "
+            "audit-checkpoint'. Do not add headings, commentary, summaries, code "
+            "fences, or a closing sentence. Continue the numbered catalog until the "
+            "response limit interrupts it."
         ),
         "tools": [],
-        "max_tokens": 32768,
+        "max_tokens": 3072,
         "max_turns": 1,
-        "reasoning_effort": "xhigh",
+        "reasoning_effort": "low",
+        "temperature": 0.0,
+        "return_token_ids": True,
     },
 }
 
@@ -607,7 +611,7 @@ def journal_excerpt(unit, started, ended):
         )
     except Exception:
         return []
-    markers = (
+    metric_markers = (
         "Avg prompt throughput:",
         "Avg generation throughput:",
         "SpecDecoding metrics:",
@@ -615,7 +619,75 @@ def journal_excerpt(unit, started, ended):
         "Waiting:",
         "GPU KV cache usage:",
     )
-    return [line for line in raw.splitlines() if any(item in line for item in markers)]
+    activity_markers = (
+        "torch.compile",
+        "triton",
+        "jit",
+        "cuda graph",
+        "cudagraph",
+        "graph capture",
+        "graph miss",
+        "piecewise",
+    )
+    return [
+        line
+        for line in raw.splitlines()
+        if any(item in line for item in metric_markers)
+        or any(item in line.lower() for item in activity_markers)
+    ]
+
+
+def journal_analysis(lines):
+    generation_throughput = []
+    spec_samples = []
+    prefix_hit_rates = []
+    execution_activity = []
+    activity_markers = (
+        "torch.compile",
+        "triton",
+        "jit",
+        "cuda graph",
+        "cudagraph",
+        "graph capture",
+        "graph miss",
+        "piecewise",
+    )
+    for line in lines:
+        match = re.search(r"Avg generation throughput:\s*([0-9.]+)", line)
+        if match:
+            generation_throughput.append(float(match.group(1)))
+        match = re.search(
+            r"Accepted:\s*(\d+) tokens, Drafted:\s*(\d+) tokens", line
+        )
+        if match:
+            accepted = int(match.group(1))
+            drafted = int(match.group(2))
+            spec_samples.append(
+                {
+                    "accepted_tokens": accepted,
+                    "drafted_tokens": drafted,
+                    "acceptance_rate": accepted / drafted if drafted else None,
+                }
+            )
+        match = re.search(r"Prefix cache hit rate:\s*([0-9.]+)%", line)
+        if match:
+            prefix_hit_rates.append(float(match.group(1)) / 100.0)
+        lowered = line.lower()
+        if any(marker in lowered for marker in activity_markers):
+            execution_activity.append(line)
+    accepted_total = sum(item["accepted_tokens"] for item in spec_samples)
+    drafted_total = sum(item["drafted_tokens"] for item in spec_samples)
+    return {
+        "engine_generation_throughput_samples": generation_throughput,
+        "spec_decode_samples": spec_samples,
+        "journal_accepted_tokens_total": accepted_total,
+        "journal_drafted_tokens_total": drafted_total,
+        "journal_acceptance_rate": (
+            accepted_total / drafted_total if drafted_total else None
+        ),
+        "prefix_cache_hit_rate_samples": prefix_hit_rates,
+        "compile_jit_cuda_graph_activity": execution_activity,
+    }
 
 
 def runtime_journal_context(unit):
@@ -693,13 +765,36 @@ def normalized_assistant(message):
     return result
 
 
+def generated_stream_digests(raw_turns):
+    token_ids = []
+    assistant_output = []
+    for turn in raw_turns:
+        choices = turn.get("response", {}).get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0]
+        token_ids.extend(choice.get("token_ids") or [])
+        message = choice.get("message") or {}
+        assistant_output.append(
+            {
+                "reasoning_content": message.get("reasoning_content"),
+                "content": message.get("content"),
+                "tool_calls": message.get("tool_calls") or [],
+            }
+        )
+    canonical_ids = json.dumps(token_ids, separators=(",", ":")).encode()
+    canonical_output = json.dumps(
+        assistant_output, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    return {
+        "token_id_count": len(token_ids),
+        "token_ids_sha256": hashlib.sha256(canonical_ids).hexdigest(),
+        "assistant_output_sha256": hashlib.sha256(canonical_output).hexdigest(),
+    }
+
+
 def run_conversation(case, seed, cache_key=None, journal_unit=None):
     system_message = SYSTEM_MESSAGE
-    if cache_key:
-        system_message = (
-            f"Benchmark cache partition: {cache_key}. "
-            "Treat this fixed-width label as metadata only.\n" + SYSTEM_MESSAGE
-        )
     messages = [
         {
             "role": "system",
@@ -725,6 +820,11 @@ def run_conversation(case, seed, cache_key=None, journal_unit=None):
             "reasoning_effort": case.get("reasoning_effort", "max"),
             "seed": seed,
         }
+        for field in ("temperature", "top_p", "return_token_ids"):
+            if field in case:
+                payload[field] = case[field]
+        if cache_key:
+            payload["cache_salt"] = cache_key
         if available_tools:
             payload["tools"] = available_tools
             payload["tool_choice"] = "auto"
@@ -815,6 +915,7 @@ def run_conversation(case, seed, cache_key=None, journal_unit=None):
             else None
         ),
         "calls": calls,
+        "final_tool_state": deepcopy(tool_state),
         "final": final,
         "finish_reason": final_finish_reason,
         "error": error,
@@ -822,7 +923,11 @@ def run_conversation(case, seed, cache_key=None, journal_unit=None):
         "metrics_before": metrics_before,
         "metrics_after": metrics_after,
         "metric_deltas": measurement_summary(metrics_before, metrics_after),
-        "journal_metrics": journal_excerpt(journal_unit, started, ended),
+        "stream_digests": generated_stream_digests(raw_turns),
+        "journal_metrics": (
+            journal_lines := journal_excerpt(journal_unit, started, ended)
+        ),
+        "journal_analysis": journal_analysis(journal_lines),
     }
 
 
@@ -930,14 +1035,16 @@ def evaluate_control(result):
             "tool_arguments_parseable": parseable,
             "no_runtime_error": result["error"] is None,
         }
-    elif case_id == "sealed_natural_decode_v1":
+    elif case_id == "sealed_natural_decode_v2":
         criteria = {
-            "natural_stop": result.get("finish_reason") == "stop",
-            "completion_marker_present": result["final"].rstrip().endswith(
-                "END-OF-CONTROL"
+            "fixed_ceiling_reached": result.get("finish_reason") == "length",
+            "exact_completion_window": (
+                result["usage"].get("completion_tokens", 0)
+                == SEALED_CONTROLS["natural-decode"]["max_tokens"]
             ),
-            "steady_state_token_floor": (
-                result["usage"].get("completion_tokens", 0) >= 1000
+            "direct_token_ids_complete": (
+                result["stream_digests"]["token_id_count"]
+                == result["usage"].get("completion_tokens", 0)
             ),
             "no_tool_calls": not calls,
             "no_runtime_error": result["error"] is None,
@@ -1291,7 +1398,15 @@ def run_sealed_control(args):
             result["model_completion_tokens_per_second"]
         ),
         "metric_deltas": result["metric_deltas"],
+        "stream_digests": result["stream_digests"],
+        "journal_metrics": result["journal_metrics"],
+        "journal_analysis": result["journal_analysis"],
         "runtime_context": result["runtime_context"],
+        "sampling": {
+            key: case[key]
+            for key in ("temperature", "top_p")
+            if key in case
+        },
         "score": result["score"],
         "gate_passed": result["score"]["passed"],
         "mock_tools_only": True,
@@ -1350,7 +1465,7 @@ def main():
                         "base_url": BASE_URL,
                         "served_model_name": MODEL,
                         "cache_isolation": (
-                            "fixed-width early request partition; required live"
+                            "OpenAI cache_salt; required live"
                         ),
                         "mock_tools_only": True,
                         "external_side_effects": False,

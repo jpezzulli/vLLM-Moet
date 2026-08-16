@@ -139,10 +139,65 @@ class ToolSuiteTests(unittest.TestCase):
         )
         self.assertEqual(
             tool_runner.SEALED_CONTROLS["natural-decode"]["id"],
-            "sealed_natural_decode_v1",
+            "sealed_natural_decode_v2",
         )
+        decode = tool_runner.SEALED_CONTROLS["natural-decode"]
+        self.assertEqual(decode["max_tokens"], 3072)
+        self.assertEqual(decode["reasoning_effort"], "low")
+        self.assertEqual(decode["temperature"], 0.0)
+        self.assertTrue(decode["return_token_ids"])
         self.assertTrue(
             set(tool_runner.SEALED_TOOLS).isdisjoint(tool_runner.TOOLS)
+        )
+
+    def test_generated_stream_digests_cover_direct_token_ids_and_output(self):
+        turns = [
+            {
+                "response": {
+                    "choices": [
+                        {
+                            "token_ids": [17, 23, 41],
+                            "message": {
+                                "reasoning_content": "brief",
+                                "content": "answer",
+                            },
+                        }
+                    ]
+                }
+            }
+        ]
+        first = tool_runner.generated_stream_digests(turns)
+        second = tool_runner.generated_stream_digests(copy.deepcopy(turns))
+        self.assertEqual(first, second)
+        self.assertEqual(first["token_id_count"], 3)
+        changed = copy.deepcopy(turns)
+        changed[0]["response"]["choices"][0]["token_ids"][-1] = 42
+        self.assertNotEqual(
+            first["token_ids_sha256"],
+            tool_runner.generated_stream_digests(changed)["token_ids_sha256"],
+        )
+
+    def test_journal_analysis_preserves_execution_path_metrics(self):
+        lines = [
+            (
+                "Engine: Avg generation throughput: 81.5 tokens/s, "
+                "Prefix cache hit rate: 0.0%"
+            ),
+            (
+                "SpecDecoding metrics: Accepted: 120 tokens, "
+                "Drafted: 200 tokens"
+            ),
+            "torch.compile graph capture occurred",
+        ]
+        result = tool_runner.journal_analysis(lines)
+        self.assertEqual(result["engine_generation_throughput_samples"], [81.5])
+        self.assertEqual(result["journal_accepted_tokens_total"], 120)
+        self.assertEqual(result["journal_drafted_tokens_total"], 200)
+        self.assertEqual(result["journal_acceptance_rate"], 0.6)
+        self.assertEqual(result["prefix_cache_hit_rate_samples"], [0.0])
+        self.assertEqual(
+            result["compile_jit_cuda_graph_activity"],
+            ["torch.compile graph capture occurred"],
         )
 
     def test_sealed_agentic_artifact_requires_real_revision(self):

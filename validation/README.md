@@ -105,21 +105,41 @@ against an external system.
 Two opt-in controls live in the same runner without changing the frozen
 30-invocation schedule:
 
-- `sealed_agentic_release_note_v1` performs an ordinary local artifact
+- `sealed_agentic_release_note_v2` performs an ordinary local artifact
   workflow: inspect an authoritative release brief, create a Markdown release
   note, inspect the artifact, revise the reported defect, inspect again, and
-  finish with the artifact identity and status. Its exact five-call sequence,
-  facts, revision, final inspection, and natural stop are automatically gated.
-- `sealed_natural_decode_v1` requests a useful approximately 1,500-token
-  engineering field note and requires a natural stop, completion marker, at
-  least 1,000 completion tokens, and no tool calls.
+  finish with the artifact identity and status. Its gate requires six model
+  turns, the exact five-call sequence, a real version-2 artifact with all
+  required facts, a passed final inspection, coherent final artifact/status
+  prose, parseable arguments, and natural stop. Mention of version 2 in final
+  prose is retained as an observation but is not a pass/fail condition.
 
-Both use OpenAI `/v1/chat/completions`, `reasoning_effort=xhigh`, a natural
-32,768-token ceiling with no forced minimum, fixed seed 5101, deterministic
-local tools, Prometheus counter deltas, and optional system-journal capture.
-Each live invocation requires an early fixed-width cache partition key. Change
-only that same-length key between repetitions; this prevents cross-run prefix
-reuse without changing the task.
+- `sealed_natural_decode_v2` is the replacement single-stream decode
+  instrument. It uses greedy sampling, `reasoning_effort=low`, a 3,072-token
+  ceiling, no forced minimum, no `ignore_eos`, and a deterministic natural
+  engineering-prose prompt requesting more useful content than the ceiling so
+  it should reach that ceiling without a synthetic tail. The result
+  records direct server-returned token IDs, a token-ID SHA-256 digest, and an
+  independent canonical assistant-output SHA-256 digest.
+
+Both use OpenAI `/v1/chat/completions`, fixed seed 5101, Prometheus counter
+deltas, and optional system-journal capture. The agentic control remains
+`reasoning_effort=xhigh` with its natural 32,768-token ceiling and
+deterministic local tools. Each live invocation requires a unique
+`cache_salt`; this isolates the prefix cache without altering the prompt.
+
+Agentic v2 supersedes agentic v1 from sealed commit
+`a557ee12a3ab833165d24b5bd15afb6667d85f81`. V1 incorrectly failed valid
+workflows solely when the final prose did not repeat the already tool-verified
+version number. The replacement changes only the benchmark gate and result
+evidence; it does not simplify the workflow or change runtime behavior.
+
+Decode v2 supersedes decode v1 from sealed commit
+`a557ee12a3ab833165d24b5bd15afb6667d85f81`. Decode v1's unconstrained
+content shape produced 3,801 to 9,366 completion tokens and materially
+different MTP acceptance, so it was not a stable performance instrument.
+The replacement changes benchmark geometry and evidence collection only; it
+introduces no runtime or serving optimization.
 
 Inspect either sealed definition without contacting a server:
 
@@ -150,8 +170,12 @@ The result records total, model, and local-tool wall time separately; model
 turns; tool calls; input/output usage; finish reason; effective request rate;
 engine decode rate when exposed; speculative draft/accepted tokens and
 acceptance rate; prefix-cache queries/hits; bounded journal metrics; and the
-resolved runner and CUDA graph mode from the current service journal. Use one
-unmeasured warm-up and separate output directories for measured repetitions.
+parsed journal engine-throughput samples, speculative counts, prefix-hit
+samples, and any compile/JIT/CUDA-graph activity observed around the request.
+The decode result also records direct token IDs in the raw response and
+matching stream digests in both result and manifest, plus the resolved runner
+and CUDA graph mode from the current service journal. Use one unmeasured
+warm-up and separate output directories for measured repetitions.
 Never commit live result directories.
 
 ## Opt-in near-million-token needle

@@ -445,7 +445,7 @@ CASES = [
 
 SEALED_CONTROLS = {
     "agentic": {
-        "id": "sealed_agentic_release_note_v1",
+        "id": "sealed_agentic_release_note_v2",
         "prompt": (
             "Create and quality-check a compact release-readiness note for project "
             "ATLAS. Inspect the authoritative brief before drafting. Create the note "
@@ -1011,7 +1011,8 @@ def evaluate_control(result):
     names = [call["name"] for call in calls]
     parseable = all("_unparseable" not in call["arguments"] for call in calls)
     criteria = {}
-    if case_id == "sealed_agentic_release_note_v1":
+    behavioral_observations = {}
+    if case_id == "sealed_agentic_release_note_v2":
         expected_names = [
             "inspect_release_brief",
             "create_release_note",
@@ -1021,15 +1022,33 @@ def evaluate_control(result):
         ]
         first_inspection = calls[2]["result"] if len(calls) > 2 else {}
         final_inspection = calls[4]["result"] if len(calls) > 4 else {}
+        artifact = result.get("final_tool_state", {}).get("release_note") or {}
+        behavioral_observations["final_explicitly_identifies_version_2"] = bool(
+            re.search(
+                r"\b(?:version|v)\b[\s:*_`-]*2\b",
+                result["final"],
+                re.IGNORECASE,
+            )
+        )
         criteria = {
             "exact_tool_sequence": names == expected_names,
+            "six_model_turns": result.get("model_turn_count") == 6,
+            "five_tool_calls": result.get("tool_call_count") == 5,
             "first_inspection_requires_revision": (
                 first_inspection.get("status") == "needs_revision"
             ),
-            "final_inspection_passed": final_inspection.get("status") == "passed",
+            "final_inspection_passed": (
+                final_inspection.get("status") == "passed"
+                and final_inspection.get("issues") == []
+            ),
+            "final_artifact_state_correct": (
+                artifact.get("artifact_id") == "NOTE-ATLAS-17"
+                and artifact.get("version") == 2
+                and not release_note_issues(artifact)
+            ),
             "final_identifies_artifact": "NOTE-ATLAS-17" in result["final"],
-            "final_identifies_version_2": bool(
-                re.search(r"\b(?:version|v)\s*2\b", result["final"], re.IGNORECASE)
+            "final_identifies_passed_status": bool(
+                re.search(r"\bpassed\b", result["final"], re.IGNORECASE)
             ),
             "natural_stop": result.get("finish_reason") == "stop",
             "tool_arguments_parseable": parseable,
@@ -1057,6 +1076,7 @@ def evaluate_control(result):
         "tool_arguments_parseable": parseable,
         "tool_call_count": len(calls),
         "notes": [result["error"]] if result["error"] else [],
+        "behavioral_observations": behavioral_observations,
     }
     return result
 

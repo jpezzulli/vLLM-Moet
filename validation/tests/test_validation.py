@@ -135,7 +135,7 @@ class ToolSuiteTests(unittest.TestCase):
         )
         self.assertEqual(
             tool_runner.SEALED_CONTROLS["agentic"]["id"],
-            "sealed_agentic_release_note_v1",
+            "sealed_agentic_release_note_v2",
         )
         self.assertEqual(
             tool_runner.SEALED_CONTROLS["natural-decode"]["id"],
@@ -239,6 +239,56 @@ class ToolSuiteTests(unittest.TestCase):
         )
         self.assertEqual(revised["version"], 2)
         self.assertEqual(final["status"], "passed")
+
+    def test_agentic_gate_uses_artifact_state_not_redundant_version_prose(self):
+        artifact = {
+            "artifact_id": "NOTE-ATLAS-17",
+            "version": 2,
+            "title": "Atlas release readiness",
+            "markdown": (
+                "# Summary\n12 of 20 nodes validated; 8 nodes remain.\n"
+                "# Schedule\n2026-09-02 22:00 UTC\n"
+                "# Owner\nRiley Chen; rollback: Morgan Lee\n"
+                "# Risk\n8 nodes remain unvalidated.\n"
+                "# Next Action\nValidate by 2026-09-01 18:00 UTC"
+            ),
+            "review_acknowledgement": "8 nodes remain unvalidated",
+        }
+        names = [
+            "inspect_release_brief",
+            "create_release_note",
+            "inspect_release_note",
+            "revise_release_note",
+            "inspect_release_note",
+        ]
+        calls = [{"name": name, "arguments": {}, "result": {}} for name in names]
+        calls[2]["result"] = {"status": "needs_revision"}
+        calls[4]["result"] = {
+            "artifact_id": "NOTE-ATLAS-17",
+            "version": 2,
+            "status": "passed",
+            "issues": [],
+        }
+        result = {
+            "case_id": "sealed_agentic_release_note_v2",
+            "calls": calls,
+            "final_tool_state": {"release_note": artifact},
+            "final": "Artifact NOTE-ATLAS-17 passed its final inspection.",
+            "finish_reason": "stop",
+            "model_turn_count": 6,
+            "tool_call_count": 5,
+            "error": None,
+        }
+        scored = tool_runner.evaluate_control(result)
+        self.assertTrue(scored["score"]["passed"])
+        self.assertFalse(
+            scored["score"]["behavioral_observations"][
+                "final_explicitly_identifies_version_2"
+            ]
+        )
+        broken = copy.deepcopy(result)
+        broken["final_tool_state"]["release_note"]["version"] = 1
+        self.assertFalse(tool_runner.evaluate_control(broken)["score"]["passed"])
 
     def test_exact_argument_comparison(self):
         good = {

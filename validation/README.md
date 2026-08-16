@@ -105,11 +105,15 @@ against an external system.
 Two opt-in controls live in the same runner without changing the frozen
 30-invocation schedule:
 
-- `sealed_agentic_release_note_v1` performs an ordinary local artifact
+- `sealed_agentic_release_note_v2` performs an ordinary local artifact
   workflow: inspect an authoritative release brief, create a Markdown release
   note, inspect the artifact, revise the reported defect, inspect again, and
-  finish with the artifact identity and status. Its exact five-call sequence,
-  facts, revision, final inspection, and natural stop are automatically gated.
+  finish with the artifact identity and status. Its gate requires six model
+  turns, the exact five-call sequence, a real version-2 artifact with all
+  required facts, a passed final inspection, coherent final artifact/status
+  prose, parseable arguments, and natural stop. Mention of version 2 in final
+  prose is retained as an observation but is not a pass/fail condition.
+
 - `sealed_natural_decode_v2` is the replacement single-stream decode
   instrument. It uses greedy sampling, `reasoning_effort=low`, a 3,072-token
   ceiling, no forced minimum, no `ignore_eos`, and a deliberately boring
@@ -122,6 +126,12 @@ deltas, and optional system-journal capture. The agentic control remains
 `reasoning_effort=xhigh` with its natural 32,768-token ceiling and
 deterministic local tools. Each live invocation requires a unique
 `cache_salt`; this isolates the prefix cache without altering the prompt.
+
+Agentic v2 supersedes agentic v1 from sealed commit
+`a557ee12a3ab833165d24b5bd15afb6667d85f81`. V1 incorrectly failed valid
+workflows solely when the final prose did not repeat the already tool-verified
+version number. The replacement changes only the benchmark gate and result
+evidence; it does not simplify the workflow or change runtime behavior.
 
 Decode v2 supersedes decode v1 from sealed commit
 `a557ee12a3ab833165d24b5bd15afb6667d85f81`. Decode v1's unconstrained

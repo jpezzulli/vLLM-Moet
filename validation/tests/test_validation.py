@@ -127,6 +127,64 @@ class ToolSuiteTests(unittest.TestCase):
         self.assertEqual(definition["ordinary_cases"], tool_runner.CASES)
         self.assertEqual(definition["concurrent_cases"], tool_runner.CONCURRENT)
 
+    def test_sealed_controls_are_opt_in_and_versioned(self):
+        self.assertEqual(len(tool_runner.invocation_plan()), 30)
+        self.assertEqual(
+            set(tool_runner.SEALED_CONTROLS),
+            {"agentic", "natural-decode"},
+        )
+        self.assertEqual(
+            tool_runner.SEALED_CONTROLS["agentic"]["id"],
+            "sealed_agentic_release_note_v1",
+        )
+        self.assertEqual(
+            tool_runner.SEALED_CONTROLS["natural-decode"]["id"],
+            "sealed_natural_decode_v1",
+        )
+        self.assertTrue(
+            set(tool_runner.SEALED_TOOLS).isdisjoint(tool_runner.TOOLS)
+        )
+
+    def test_sealed_agentic_artifact_requires_real_revision(self):
+        state = {}
+        created = tool_runner.execute_tool(
+            "create_release_note",
+            {
+                "title": "Atlas release readiness",
+                "markdown": (
+                    "# Summary\n12 of 20 nodes validated; 8 nodes remain.\n"
+                    "# Schedule\n2026-09-02 22:00 UTC\n"
+                    "# Owner\nRiley Chen; rollback: Morgan Lee\n"
+                    "# Risk\n8 nodes remain unvalidated.\n"
+                    "# Next Action\nValidate by 2026-09-01 18:00 UTC"
+                ),
+            },
+            state,
+        )
+        first = tool_runner.execute_tool(
+            "inspect_release_note",
+            {"artifact_id": created["artifact_id"]},
+            state,
+        )
+        self.assertEqual(first["status"], "needs_revision")
+        revised = tool_runner.execute_tool(
+            "revise_release_note",
+            {
+                "artifact_id": created["artifact_id"],
+                "title": state["release_note"]["title"],
+                "markdown": state["release_note"]["markdown"],
+                "review_acknowledgement": "8 nodes remain unvalidated",
+            },
+            state,
+        )
+        final = tool_runner.execute_tool(
+            "inspect_release_note",
+            {"artifact_id": revised["artifact_id"]},
+            state,
+        )
+        self.assertEqual(revised["version"], 2)
+        self.assertEqual(final["status"], "passed")
+
     def test_exact_argument_comparison(self):
         good = {
             "case_id": "02_obvious_weather",

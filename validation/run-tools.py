@@ -128,10 +128,88 @@ TOOLS = {
         {"code": {"type": "string"}},
         ["code"],
     ),
+    "inspect_release_brief": tool(
+        "inspect_release_brief",
+        "Read the authoritative local release brief for one project.",
+        {"project_id": {"type": "string", "enum": ["ATLAS"]}},
+        ["project_id"],
+    ),
+    "create_release_note": tool(
+        "create_release_note",
+        "Create a local release-readiness note artifact from Markdown.",
+        {
+            "title": {"type": "string"},
+            "markdown": {"type": "string"},
+        },
+        ["title", "markdown"],
+    ),
+    "inspect_release_note": tool(
+        "inspect_release_note",
+        "Inspect a release note artifact against the authoritative brief.",
+        {"artifact_id": {"type": "string"}},
+        ["artifact_id"],
+    ),
+    "revise_release_note": tool(
+        "revise_release_note",
+        "Replace a release note and record the requested review acknowledgement.",
+        {
+            "artifact_id": {"type": "string"},
+            "title": {"type": "string"},
+            "markdown": {"type": "string"},
+            "review_acknowledgement": {
+                "type": "string",
+                "enum": ["8 nodes remain unvalidated"],
+            },
+        },
+        ["artifact_id", "title", "markdown", "review_acknowledgement"],
+    ),
 }
 
 
-def execute_tool(name, args):
+SEALED_TOOLS = {
+    name: TOOLS.pop(name)
+    for name in (
+        "inspect_release_brief",
+        "create_release_note",
+        "inspect_release_note",
+        "revise_release_note",
+    )
+}
+ALL_TOOLS = {**TOOLS, **SEALED_TOOLS}
+
+
+def release_note_issues(artifact):
+    if not artifact:
+        return ["artifact does not exist"]
+    title = str(artifact.get("title", ""))
+    markdown = str(artifact.get("markdown", ""))
+    lowered = markdown.lower()
+    issues = []
+    if title != "Atlas release readiness":
+        issues.append("title must be exactly 'Atlas release readiness'")
+    required_text = (
+        "2026-09-02 22:00 UTC",
+        "Riley Chen",
+        "12 of 20",
+        "8 nodes",
+        "Morgan Lee",
+        "2026-09-01 18:00 UTC",
+    )
+    for value in required_text:
+        if value.lower() not in lowered:
+            issues.append(f"missing required fact: {value}")
+    for heading in ("summary", "schedule", "owner", "risk", "next action"):
+        if heading not in lowered:
+            issues.append(f"missing required section: {heading}")
+    if artifact.get("review_acknowledgement") != "8 nodes remain unvalidated":
+        issues.append(
+            "review acknowledgement must be '8 nodes remain unvalidated'"
+        )
+    return issues
+
+
+def execute_tool(name, args, state=None):
+    state = state if state is not None else {}
     if name == "get_weather":
         return {"location": args.get("location"), "temperature": 17, "unit": "celsius", "condition": "rainy"}
     if name == "lookup_customer":
@@ -184,6 +262,70 @@ def execute_tool(name, args):
     if name == "verify_code":
         code = args.get("code")
         return {"code": code, "verified": code == "ORCHID-7319"}
+    if name == "inspect_release_brief":
+        return {
+            "project_id": "ATLAS",
+            "project": "Atlas",
+            "required_title": "Atlas release readiness",
+            "deployment_window": "2026-09-02 22:00 UTC",
+            "release_owner": "Riley Chen",
+            "validation_status": "12 of 20 nodes validated",
+            "remaining_nodes": 8,
+            "rollback_owner": "Morgan Lee",
+            "next_action": "Validate the remaining 8 nodes",
+            "next_action_deadline": "2026-09-01 18:00 UTC",
+            "required_sections": [
+                "Summary",
+                "Schedule",
+                "Owner",
+                "Risk",
+                "Next Action",
+            ],
+        }
+    if name == "create_release_note":
+        artifact = {
+            "artifact_id": "NOTE-ATLAS-17",
+            "version": 1,
+            "title": args.get("title"),
+            "markdown": args.get("markdown"),
+            "review_acknowledgement": None,
+        }
+        state["release_note"] = artifact
+        return {
+            "artifact_id": artifact["artifact_id"],
+            "version": artifact["version"],
+            "status": "created",
+            "next_step": "inspect_release_note",
+        }
+    if name == "inspect_release_note":
+        artifact = state.get("release_note")
+        if not artifact or args.get("artifact_id") != artifact["artifact_id"]:
+            return {"status": "not_found", "issues": ["artifact does not exist"]}
+        issues = release_note_issues(artifact)
+        return {
+            "artifact_id": artifact["artifact_id"],
+            "version": artifact["version"],
+            "status": "passed" if not issues else "needs_revision",
+            "issues": issues,
+        }
+    if name == "revise_release_note":
+        artifact = state.get("release_note")
+        if not artifact or args.get("artifact_id") != artifact["artifact_id"]:
+            return {"status": "not_found", "artifact_id": args.get("artifact_id")}
+        artifact.update(
+            {
+                "version": artifact["version"] + 1,
+                "title": args.get("title"),
+                "markdown": args.get("markdown"),
+                "review_acknowledgement": args.get("review_acknowledgement"),
+            }
+        )
+        return {
+            "artifact_id": artifact["artifact_id"],
+            "version": artifact["version"],
+            "status": "revised",
+            "next_step": "inspect_release_note",
+        }
     return {"error": "unknown_tool", "name": name}
 
 
@@ -300,6 +442,46 @@ CASES = [
 ]
 
 
+SEALED_CONTROLS = {
+    "agentic": {
+        "id": "sealed_agentic_release_note_v1",
+        "prompt": (
+            "Create and quality-check a compact release-readiness note for project "
+            "ATLAS. Inspect the authoritative brief before drafting. Create the note "
+            "with the exact required title and all required sections and facts. "
+            "Inspect the created artifact, correct every reported defect with the "
+            "revision tool, inspect the revision, and only then finish with the "
+            "artifact ID, version, and inspection status."
+        ),
+        "tools": [
+            "inspect_release_brief",
+            "create_release_note",
+            "inspect_release_note",
+            "revise_release_note",
+        ],
+        "max_tokens": 32768,
+        "max_turns": 7,
+        "reasoning_effort": "xhigh",
+    },
+    "natural-decode": {
+        "id": "sealed_natural_decode_v1",
+        "prompt": (
+            "Write a self-contained engineering field note about operating a "
+            "reliable distributed job scheduler. Cover requirements, state "
+            "transitions, leases, idempotency, retries, fairness, observability, "
+            "capacity planning, security, testing, incident response, and a concise "
+            "operator checklist. Use approximately 1,500 useful output tokens, avoid "
+            "padding or repetition, and conclude naturally with the exact final line "
+            "shown between quotes: 'END-OF-CONTROL'"
+        ),
+        "tools": [],
+        "max_tokens": 32768,
+        "max_turns": 1,
+        "reasoning_effort": "xhigh",
+    },
+}
+
+
 def post_json(path, payload, timeout=900):
     body = json.dumps(payload).encode()
     request = urllib.request.Request(
@@ -337,11 +519,160 @@ def metrics_snapshot():
                 "request_prefill_time",
                 "request_decode_time",
                 "prefix_cache",
+                "spec_decode",
             )
         ):
             name, _, value = line.rpartition(" ")
             keep[name] = value
     return keep
+
+
+def metric_value(snapshot, marker):
+    values = []
+    for name, raw in snapshot.items():
+        if marker not in name or name.endswith("_created"):
+            continue
+        try:
+            values.append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return sum(values) if values else None
+
+
+def metric_delta(before, after, marker):
+    first = metric_value(before, marker)
+    last = metric_value(after, marker)
+    if first is None or last is None or last < first:
+        return None
+    return last - first
+
+
+def measurement_summary(before, after):
+    prompt_tokens = metric_delta(before, after, "prompt_tokens_total")
+    generation_tokens = metric_delta(before, after, "generation_tokens_total")
+    decode_seconds = metric_delta(
+        before, after, "request_decode_time_seconds_sum"
+    )
+    draft_tokens = metric_delta(
+        before, after, "spec_decode_num_draft_tokens_total"
+    )
+    accepted_tokens = metric_delta(
+        before, after, "spec_decode_num_accepted_tokens_total"
+    )
+    summary = {
+        "prompt_tokens": prompt_tokens,
+        "generation_tokens": generation_tokens,
+        "decode_seconds": decode_seconds,
+        "draft_tokens": draft_tokens,
+        "accepted_tokens": accepted_tokens,
+        "prefix_cache_queries": metric_delta(
+            before, after, "prefix_cache_queries_total"
+        ),
+        "prefix_cache_hits": metric_delta(
+            before, after, "prefix_cache_hits_total"
+        ),
+    }
+    summary["engine_generation_tokens_per_second"] = (
+        generation_tokens / decode_seconds
+        if generation_tokens is not None and decode_seconds
+        else None
+    )
+    summary["draft_acceptance_rate"] = (
+        accepted_tokens / draft_tokens
+        if accepted_tokens is not None and draft_tokens
+        else None
+    )
+    return summary
+
+
+def journal_excerpt(unit, started, ended):
+    if not unit:
+        return []
+    try:
+        raw = subprocess.check_output(
+            [
+                "journalctl",
+                "--unit",
+                unit,
+                "--since",
+                f"@{started - 1:.3f}",
+                "--until",
+                f"@{ended + 1:.3f}",
+                "--no-pager",
+                "--output",
+                "short-iso",
+            ],
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return []
+    markers = (
+        "Avg prompt throughput:",
+        "Avg generation throughput:",
+        "SpecDecoding metrics:",
+        "Running:",
+        "Waiting:",
+        "GPU KV cache usage:",
+    )
+    return [line for line in raw.splitlines() if any(item in line for item in markers)]
+
+
+def runtime_journal_context(unit):
+    if not unit:
+        return {}
+    try:
+        raw = subprocess.check_output(
+            [
+                "journalctl",
+                "--unit",
+                unit,
+                "--boot",
+                "--no-pager",
+                "--output",
+                "cat",
+            ],
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return {}
+    model_runner = None
+    graph_mode = None
+    version = None
+    runner_evidence = None
+    graph_evidence = None
+    for line in raw.splitlines():
+        if re.search(r"\bversion 0\.", line):
+            version = line.strip()
+        if "Initializing a V1 LLM engine" in line:
+            model_runner = "V1"
+            runner_evidence = line.strip()
+        if "Model Runner V2" in line or "gpu_model_runner_v2.py" in line:
+            model_runner = "V2"
+            runner_evidence = line.strip()
+        match = re.search(r"CUDAGraphMode\.([A-Z_]+)", line)
+        if match:
+            graph_mode = match.group(1)
+            graph_evidence = line.strip()
+    runner_path = None
+    if model_runner == "V1":
+        runner_path = "vllm/v1/worker/gpu_model_runner.py"
+    elif model_runner == "V2":
+        runner_path = "vllm/v1/worker/gpu_model_runner_v2.py"
+    return {
+        "model_runner": model_runner,
+        "model_runner_source_path": runner_path,
+        "cuda_graph_mode": graph_mode,
+        "version_banner": version,
+        "evidence": list(
+            dict.fromkeys(
+                item
+                for item in (version, runner_evidence, graph_evidence)
+                if item is not None
+            )
+        ),
+    }
 
 
 def parse_args(raw):
@@ -362,28 +693,36 @@ def normalized_assistant(message):
     return result
 
 
-def run_conversation(case, seed):
+def run_conversation(case, seed, cache_key=None, journal_unit=None):
+    system_message = SYSTEM_MESSAGE
+    if cache_key:
+        system_message = (
+            f"Benchmark cache partition: {cache_key}. "
+            "Treat this fixed-width label as metadata only.\n" + SYSTEM_MESSAGE
+        )
     messages = [
         {
             "role": "system",
-            "content": SYSTEM_MESSAGE,
+            "content": system_message,
         },
         {"role": "user", "content": case["prompt"]},
     ]
-    available_tools = [TOOLS[name] for name in case.get("tools", [])]
+    available_tools = [ALL_TOOLS[name] for name in case.get("tools", [])]
     raw_turns = []
     calls = []
+    tool_state = {}
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     started = time.time()
     metrics_before = metrics_snapshot()
     error = None
     final = ""
-    for turn in range(5):
+    final_finish_reason = None
+    for turn in range(case.get("max_turns", 5)):
         payload = {
             "model": MODEL,
             "messages": messages,
             "max_tokens": case.get("max_tokens", 768),
-            "reasoning_effort": "max",
+            "reasoning_effort": case.get("reasoning_effort", "max"),
             "seed": seed,
         }
         if available_tools:
@@ -399,6 +738,8 @@ def run_conversation(case, seed):
             error = f"{type(exc).__name__}: {exc}"
             break
         turn_ended = time.time()
+        choices = response.get("choices") or []
+        finish_reason = choices[0].get("finish_reason") if choices else None
         raw_turns.append(
             {
                 "request": payload,
@@ -406,12 +747,12 @@ def run_conversation(case, seed):
                 "started_epoch": turn_started,
                 "ended_epoch": turn_ended,
                 "wall_seconds": turn_ended - turn_started,
+                "finish_reason": finish_reason,
             }
         )
         turn_usage = response.get("usage") or {}
         for key in usage:
             usage[key] += int(turn_usage.get(key) or 0)
-        choices = response.get("choices") or []
         if not choices:
             error = "response contained no choices"
             break
@@ -419,13 +760,16 @@ def run_conversation(case, seed):
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
             final = message.get("content") or ""
+            final_finish_reason = finish_reason
             break
         messages.append(normalized_assistant(message))
         for call in tool_calls:
             function = call.get("function") or {}
             name = function.get("name") or ""
             args = parse_args(function.get("arguments"))
-            result = execute_tool(name, args)
+            tool_started = time.perf_counter()
+            result = execute_tool(name, args, tool_state)
+            tool_wall_seconds = time.perf_counter() - tool_started
             calls.append(
                 {
                     "turn": turn,
@@ -433,6 +777,7 @@ def run_conversation(case, seed):
                     "name": name,
                     "arguments": args,
                     "result": result,
+                    "tool_wall_seconds": tool_wall_seconds,
                 }
             )
             messages.append(
@@ -444,24 +789,40 @@ def run_conversation(case, seed):
                 }
             )
     ended = time.time()
+    metrics_after = metrics_snapshot()
+    model_wall_seconds = sum(item["wall_seconds"] for item in raw_turns)
+    tool_wall_seconds = sum(item["tool_wall_seconds"] for item in calls)
     return {
         "case_id": case["id"],
         "seed": seed,
+        "cache_key": cache_key,
         "started_epoch": started,
         "ended_epoch": ended,
         "wall_seconds": ended - started,
+        "model_wall_seconds": model_wall_seconds,
+        "tool_wall_seconds": tool_wall_seconds,
+        "model_turn_count": len(raw_turns),
+        "tool_call_count": len(calls),
         "usage": usage,
         "effective_completion_tokens_per_second": (
             usage["completion_tokens"] / (ended - started)
             if ended > started
             else None
         ),
+        "model_completion_tokens_per_second": (
+            usage["completion_tokens"] / model_wall_seconds
+            if model_wall_seconds
+            else None
+        ),
         "calls": calls,
         "final": final,
+        "finish_reason": final_finish_reason,
         "error": error,
         "raw_turns": raw_turns,
         "metrics_before": metrics_before,
-        "metrics_after": metrics_snapshot(),
+        "metrics_after": metrics_after,
+        "metric_deltas": measurement_summary(metrics_before, metrics_after),
+        "journal_metrics": journal_excerpt(journal_unit, started, ended),
     }
 
 
@@ -535,6 +896,60 @@ def evaluate(result):
         "tool_arguments_parseable": parseable,
         "tool_call_count": len(calls),
         "notes": notes,
+    }
+    return result
+
+
+def evaluate_control(result):
+    case_id = result["case_id"]
+    calls = result["calls"]
+    names = [call["name"] for call in calls]
+    parseable = all("_unparseable" not in call["arguments"] for call in calls)
+    criteria = {}
+    if case_id == "sealed_agentic_release_note_v1":
+        expected_names = [
+            "inspect_release_brief",
+            "create_release_note",
+            "inspect_release_note",
+            "revise_release_note",
+            "inspect_release_note",
+        ]
+        first_inspection = calls[2]["result"] if len(calls) > 2 else {}
+        final_inspection = calls[4]["result"] if len(calls) > 4 else {}
+        criteria = {
+            "exact_tool_sequence": names == expected_names,
+            "first_inspection_requires_revision": (
+                first_inspection.get("status") == "needs_revision"
+            ),
+            "final_inspection_passed": final_inspection.get("status") == "passed",
+            "final_identifies_artifact": "NOTE-ATLAS-17" in result["final"],
+            "final_identifies_version_2": bool(
+                re.search(r"\b(?:version|v)\s*2\b", result["final"], re.IGNORECASE)
+            ),
+            "natural_stop": result.get("finish_reason") == "stop",
+            "tool_arguments_parseable": parseable,
+            "no_runtime_error": result["error"] is None,
+        }
+    elif case_id == "sealed_natural_decode_v1":
+        criteria = {
+            "natural_stop": result.get("finish_reason") == "stop",
+            "completion_marker_present": result["final"].rstrip().endswith(
+                "END-OF-CONTROL"
+            ),
+            "steady_state_token_floor": (
+                result["usage"].get("completion_tokens", 0) >= 1000
+            ),
+            "no_tool_calls": not calls,
+            "no_runtime_error": result["error"] is None,
+        }
+    else:
+        criteria = {"known_control": False}
+    result["score"] = {
+        "passed": bool(criteria) and all(criteria.values()),
+        "criteria": criteria,
+        "tool_arguments_parseable": parseable,
+        "tool_call_count": len(calls),
+        "notes": [result["error"]] if result["error"] else [],
     }
     return result
 
@@ -822,6 +1237,72 @@ def invocation_plan(repeats=2):
     return plan
 
 
+def run_sealed_control(args):
+    if not args.cache_key or not re.fullmatch(
+        r"[A-Za-z0-9_.:-]{16,80}", args.cache_key
+    ):
+        raise ValueError(
+            "--cache-key must be a 16-80 character fixed-width run partition"
+        )
+    case = deepcopy(SEALED_CONTROLS[args.control])
+    output_dir = args.output_dir or Path(
+        "validation-results",
+        time.strftime(f"{case['id']}-%Y%m%d-%H%M%S"),
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result = evaluate_control(
+        run_conversation(
+            case,
+            seed=5101,
+            cache_key=args.cache_key,
+            journal_unit=args.journal_unit,
+        )
+    )
+    result.update(
+        {
+            "runtime": args.runtime,
+            "phase": "sealed_control",
+            "control": args.control,
+            "runtime_context": runtime_journal_context(args.journal_unit),
+        }
+    )
+    write_json(output_dir / "result.json", result)
+    manifest = {
+        "sealed_control": args.control,
+        "case_id": case["id"],
+        "runtime": args.runtime,
+        "base_url": BASE_URL,
+        "served_model_name": MODEL,
+        "cache_key": args.cache_key,
+        "reasoning_effort": case["reasoning_effort"],
+        "max_tokens": case["max_tokens"],
+        "seed": result["seed"],
+        "wall_seconds": result["wall_seconds"],
+        "model_wall_seconds": result["model_wall_seconds"],
+        "tool_wall_seconds": result["tool_wall_seconds"],
+        "model_turn_count": result["model_turn_count"],
+        "tool_call_count": result["tool_call_count"],
+        "usage": result["usage"],
+        "finish_reason": result["finish_reason"],
+        "effective_completion_tokens_per_second": (
+            result["effective_completion_tokens_per_second"]
+        ),
+        "model_completion_tokens_per_second": (
+            result["model_completion_tokens_per_second"]
+        ),
+        "metric_deltas": result["metric_deltas"],
+        "runtime_context": result["runtime_context"],
+        "score": result["score"],
+        "gate_passed": result["score"]["passed"],
+        "mock_tools_only": True,
+        "external_side_effects_executed": False,
+        "result": "result.json",
+    }
+    write_json(output_dir / "manifest.json", manifest)
+    print(json.dumps(manifest, indent=2))
+    return 0 if manifest["gate_passed"] else 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run or inspect the frozen 30-invocation tool/agent suite."
@@ -832,6 +1313,9 @@ def main():
     parser.add_argument("--deadline-hours", type=float, default=4.0)
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--only-case")
+    parser.add_argument("--control", choices=sorted(SEALED_CONTROLS))
+    parser.add_argument("--cache-key")
+    parser.add_argument("--journal-unit")
     parser.add_argument("--base-url", default=base_url())
     parser.add_argument("--served-model-name", default=served_model_name())
     parser.add_argument("--list", action="store_true")
@@ -842,12 +1326,39 @@ def main():
     BASE_URL = args.base_url.rstrip("/")
     MODEL = args.served_model_name
 
+    if args.control and (args.only_case or args.replay):
+        parser.error("--control cannot be combined with --only-case or --replay")
     plan = invocation_plan(args.repeats)
     if args.list:
-        for index, item in enumerate(plan, 1):
-            print(f"{index:02d}\t{item['case_id']}\t{item['phase']}\t{item['repeat']}")
+        if args.control:
+            print(json.dumps(SEALED_CONTROLS[args.control], indent=2))
+        else:
+            for index, item in enumerate(plan, 1):
+                print(
+                    f"{index:02d}\t{item['case_id']}\t"
+                    f"{item['phase']}\t{item['repeat']}"
+                )
         return 0
     if args.dry_run:
+        if args.control:
+            print(
+                json.dumps(
+                    {
+                        "mode": "dry-run",
+                        "sealed_control": args.control,
+                        "definition": SEALED_CONTROLS[args.control],
+                        "base_url": BASE_URL,
+                        "served_model_name": MODEL,
+                        "cache_isolation": (
+                            "fixed-width early request partition; required live"
+                        ),
+                        "mock_tools_only": True,
+                        "external_side_effects": False,
+                    },
+                    indent=2,
+                )
+            )
+            return 0
         print(json.dumps({
             "mode": "dry-run",
             "base_url": BASE_URL,
@@ -862,6 +1373,14 @@ def main():
         manifest = score_rows(read_jsonl(args.replay))
         print(json.dumps(manifest, indent=2))
         return 0 if manifest["gate_passed"] else 1
+    if args.control:
+        if not args.cache_key or not re.fullmatch(
+            r"[A-Za-z0-9_.:-]{16,80}", args.cache_key
+        ):
+            parser.error(
+                "--control requires --cache-key with 16-80 fixed-width characters"
+            )
+        return run_sealed_control(args)
 
     output_dir = args.output_dir or Path(
         "validation-results", time.strftime("tools-%Y%m%d-%H%M%S")

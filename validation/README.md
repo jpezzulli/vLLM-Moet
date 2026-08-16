@@ -100,6 +100,60 @@ document, restart, delegation, or verification services. The published 30/30
 claim means correct parser output, tool selection, and arguments—not execution
 against an external system.
 
+### Sealed short performance controls
+
+Two opt-in controls live in the same runner without changing the frozen
+30-invocation schedule:
+
+- `sealed_agentic_release_note_v1` performs an ordinary local artifact
+  workflow: inspect an authoritative release brief, create a Markdown release
+  note, inspect the artifact, revise the reported defect, inspect again, and
+  finish with the artifact identity and status. Its exact five-call sequence,
+  facts, revision, final inspection, and natural stop are automatically gated.
+- `sealed_natural_decode_v1` requests a useful approximately 1,500-token
+  engineering field note and requires a natural stop, completion marker, at
+  least 1,000 completion tokens, and no tool calls.
+
+Both use OpenAI `/v1/chat/completions`, `reasoning_effort=xhigh`, a natural
+32,768-token ceiling with no forced minimum, fixed seed 5101, deterministic
+local tools, Prometheus counter deltas, and optional system-journal capture.
+Each live invocation requires an early fixed-width cache partition key. Change
+only that same-length key between repetitions; this prevents cross-run prefix
+reuse without changing the task.
+
+Inspect either sealed definition without contacting a server:
+
+```bash
+python3 validation/run-tools.py --control agentic --dry-run
+python3 validation/run-tools.py --control natural-decode --dry-run
+```
+
+Run one agentic control and one natural-decode control:
+
+```bash
+python3 validation/run-tools.py \
+  --control agentic \
+  --runtime candidate \
+  --cache-key AGENTIC-RUN-0000000000000001 \
+  --journal-unit llmbrain \
+  --output-dir validation-results/agentic-YYYYMMDD-HHMMSS
+
+python3 validation/run-tools.py \
+  --control natural-decode \
+  --runtime candidate \
+  --cache-key NATURAL-RUN-0000000000000001 \
+  --journal-unit llmbrain \
+  --output-dir validation-results/natural-YYYYMMDD-HHMMSS
+```
+
+The result records total, model, and local-tool wall time separately; model
+turns; tool calls; input/output usage; finish reason; effective request rate;
+engine decode rate when exposed; speculative draft/accepted tokens and
+acceptance rate; prefix-cache queries/hits; bounded journal metrics; and the
+resolved runner and CUDA graph mode from the current service journal. Use one
+unmeasured warm-up and separate output directories for measured repetitions.
+Never commit live result directories.
+
 ## Opt-in near-million-token needle
 
 The public runner preserves the final filler, system text, retrieval prompt,

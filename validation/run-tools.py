@@ -1139,7 +1139,7 @@ CONCURRENT = [
             "and all-at-once deployment. Recommend the safest method and give three concise steps."
         ),
         "tools": [],
-        "max_tokens": 768,
+        "max_tokens": 32768,
     },
     {
         "id": "15b_concurrent_subagent_logic",

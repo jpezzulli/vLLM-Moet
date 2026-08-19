@@ -101,7 +101,8 @@ boundary narrow.
 
 - `patch/`: sanctioned generated runtime patch and source fingerprints.
 - `scripts/` and `bench/recipes/`: reproducible launch/build configuration.
-- `validation/`: public cases, fixtures, graders, and replay-safe checks.
+- `validation/`: pointer to `jpezzulli/pennyroyal-validation`; the runnable
+  cases, fixtures, graders, and replay-safe checks are maintained there.
 - `bench/`: benchmark definitions and published result rendering.
 - `docs/`, `README.md`, `BUILD-AND-RUN.md`, `VALIDATION.md`: public behavior,
   architecture, operation, provenance, and claim boundaries.

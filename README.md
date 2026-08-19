@@ -47,15 +47,15 @@ profile.
 
 | Historical validated result | Outcome |
 |---|---:|
-| [Frozen reasoning quality](validation/README.md#frozen-reasoning-suite) | **97.07/100** |
-| [Tool/agent suite](validation/README.md#tool-and-agent-suite) | **30/30** exact tool selections and arguments |
+| [Frozen reasoning quality](https://github.com/jpezzulli/pennyroyal-validation/blob/2950b2eec7e95c69174fb4950f78886064f08203/results/README.md) | **97.07/100** |
+| [Tool/agent suite](https://github.com/jpezzulli/pennyroyal-validation/blob/2950b2eec7e95c69174fb4950f78886064f08203/docs/cases/tools.md) | **30/30** exact tool selections and arguments |
 | Combined suite-wall throughput | **53.44 tok/s** including harness overhead |
 | Model-generation throughput | approximately **56.49 tok/s**, excluding harness overhead |
-| [Long-context retrieval](validation/README.md#opt-in-near-million-token-needle) | **994,987 input tokens**, correct needle |
-| [Million-token prefill](validation/README.md#opt-in-near-million-token-needle) | **971.495 s at 1,024.18 tok/s** |
-| [Time to first token](validation/README.md#opt-in-near-million-token-needle) | **975.550 s**, approximately 16 minutes |
-| [Post-prefill decode](validation/README.md#opt-in-near-million-token-needle) | **64.12 tok/s** |
-| [Immediate follow-up](validation/README.md#opt-in-near-million-token-needle) | Correct: `37 + 58` returned `95` |
+| [Long-context retrieval](https://github.com/jpezzulli/pennyroyal-validation/blob/2950b2eec7e95c69174fb4950f78886064f08203/results/README.md) | **994,987 input tokens**, correct needle |
+| [Million-token prefill](https://github.com/jpezzulli/pennyroyal-validation/blob/2950b2eec7e95c69174fb4950f78886064f08203/results/README.md) | **971.495 s at 1,024.18 tok/s** |
+| [Time to first token](https://github.com/jpezzulli/pennyroyal-validation/blob/2950b2eec7e95c69174fb4950f78886064f08203/results/README.md) | **975.550 s**, approximately 16 minutes |
+| [Post-prefill decode](https://github.com/jpezzulli/pennyroyal-validation/blob/2950b2eec7e95c69174fb4950f78886064f08203/results/README.md) | **64.12 tok/s** |
+| [Immediate follow-up](https://github.com/jpezzulli/pennyroyal-validation/blob/2950b2eec7e95c69174fb4950f78886064f08203/results/README.md) | Correct: `37 + 58` returned `95` |
 | Lowest directly sampled physical VRAM free | **119 MiB** during the long-context run |
 
 ## What changed
@@ -215,7 +215,7 @@ separate throughout this repository.
 - [BUILD-AND-RUN.md](BUILD-AND-RUN.md) — pinned native build, launch, and smoke validation
 - [HOW-IT-WORKS.md](HOW-IT-WORKS.md) — allocation, NUMA/UVA, PCIe, graphs, and memory geometry
 - [VALIDATION.md](VALIDATION.md) — quality, tools, throughput, 1M retrieval, power, and limits
-- [Public validation suites](validation/README.md) — runnable smoke, reasoning, tools, and opt-in needle tests
+- [Canonical public validation library](https://github.com/jpezzulli/pennyroyal-validation/tree/2950b2eec7e95c69174fb4950f78886064f08203) — runnable suites, case library, client guide, curated runs, and detailed release assets
 - [PROVENANCE.md](PROVENANCE.md) — ownership, exact commits, model pin, and evidence roots
 
 The large OCI image remains available as an earlier, fully reproducible
@@ -273,7 +273,7 @@ qualification after the pack tooling is available.
 - `container/` and `Containerfile.ds4flash-0731-sm120` — historical OCI v4
   material, reproduced exactly from tag `history/oci-v4-20260802`
 - `docs/` — detailed historical implementation, benchmark, and container records
-- `validation/` — frozen public cases, mock tools, graders, replay fixtures, and runners
+- `validation/` — pointer to the canonical standalone validation repository; the former working copy remains in Git history
 
 Never hand-edit `patch/vllm-moet-v0.24.0.patch`, `patch/FILES.txt`, or
 `patch/SOURCE.txt`; see [AGENTS.md](AGENTS.md).

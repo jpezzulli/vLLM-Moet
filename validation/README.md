@@ -81,7 +81,10 @@ identify budget/cost and the other schedule/timeline.
 The original invocation schedule is one smoke request, 26 ordinary measured
 requests, and three genuinely concurrent requests: **30 invocations** total.
 The preserved requests use `reasoning_effort=max`, deterministic per-repeat
-seeds, each case's original output cap, and the launcher's sampling defaults.
+seeds, case-specific output caps, and the launcher's sampling defaults. The
+main concurrent release-analysis case permits 32,768 completion tokens so
+high-reasoning models are evaluated on the requested answer rather than
+failing when hidden reasoning exhausts a short output cap.
 
 ```bash
 python3 validation/run-tools.py --list

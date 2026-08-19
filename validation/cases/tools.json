@@ -125,7 +125,7 @@
       "id": "15a_concurrent_main",
       "prompt": "You are the main release agent. A deployment affects 40 nodes, rollback takes 4 minutes, and downtime must remain under 1 minute. Compare rolling, blue-green, and all-at-once deployment. Recommend the safest method and give three concise steps.",
       "tools": [],
-      "max_tokens": 768
+      "max_tokens": 32768
     },
     {
       "id": "15b_concurrent_subagent_logic",
